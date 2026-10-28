@@ -16,6 +16,15 @@ const SRC = { self:'자가 해칭', buy:'입양(구매)', other:'기타' };
 const MORPHS = ['할리퀸','익스트림 할리퀸','핀스트라이프','풀 핀스트라이프','달마시안','슈퍼 달마시안','플레임','타이거','브린들','바이컬러','패턴리스','릴리화이트','아잔틱','카푸치노','소프트스케일','크림시클','팬텀','레드 베이스','옐로 베이스','올리브'];
 const DEF = { feedAlertDays:3, foods:['슈퍼푸드(CGD)','귀뚜라미','듀비아','기타 곤충'], codePrefix:'CR-' };
 const CFG = window.GECKO_CONFIG || {};
+const ROLE = { admin:'관리자', keeper:'기록 담당', viewer:'보기 전용' };
+const ROLE_HINT = { admin:'개체·브리딩·분양·설정·구성원까지 모두', keeper:'무게·급여·탈피·배변·메모 기록 추가와 수정', viewer:'보기만 가능' };
+const HATCHM = { exact:'정확한 날짜', approx:'대략(추정)', unknown:'알 수 없음' };
+const PUBF = [
+  ['hatch', '해칭일·나이'], ['lineage', '혈통(부모·조부모)'], ['breeder', '브리더(농장 이름·로고)'], ['weight', '무게 기록'],
+  ['care', '급여·탈피·배변 기록'], ['sale', '분양일·분양가'], ['buyer', '분양받은 분 이름'], ['notes', '메모']
+];
+const PUB_DEF = { hatch:true, lineage:true, breeder:true, weight:false, care:false, sale:false, buyer:false, notes:false };
+const FOOT = '<svg class="foot" viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><ellipse cx="12" cy="15.6" rx="3.9" ry="3.4"/><circle cx="4.4" cy="11.6" r="1.7"/><circle cx="7.2" cy="6.4" r="1.7"/><circle cx="12" cy="4.6" r="1.7"/><circle cx="16.8" cy="6.4" r="1.7"/><circle cx="19.6" cy="11.6" r="1.7"/></g><path d="M12 15.6 4.4 11.6M12 15.6 7.2 6.4M12 15.6V4.6M12 15.6l4.8-9.2M12 15.6l7.6-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>';
 const QICON = {
   weight:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14l-1.6-10.5H6.6z"/><circle cx="12" cy="6" r="2.2"/></svg>',
   feed:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 11.5h17a8.5 8.5 0 0 1-17 0z"/><path d="M9 8.5c0-2 2-2 2-4.5M14 8.5c0-2 2-2 2-4.5"/></svg>',
@@ -45,12 +54,33 @@ function ageText(h) {
   const y = Math.floor(months / 12), m = months % 12;
   return y ? (m ? `${y}년 ${m}개월` : `${y}년`) : `${m}개월`;
 }
+const hatchMode = g => (g && g.hatchMode) || 'exact';
+function hatchText(g) {
+  const m = hatchMode(g);
+  if (m === 'unknown') return '알 수 없음';
+  if (!g.hatchDate) return '—';
+  return m === 'approx' ? `${g.hatchDate.slice(0, 7).replace('-', '.')}경 (추정)` : fmtD(g.hatchDate);
+}
+function hatchAge(g) {
+  const m = hatchMode(g);
+  if (m === 'unknown' || !g.hatchDate) return '';
+  const a = ageText(g.hatchDate); return a && m === 'approx' ? `약 ${a}` : a;
+}
+function hatchLabel(g) {
+  const m = hatchMode(g);
+  if (m === 'unknown') return '해칭일 모름';
+  if (!g.hatchDate) return '';
+  return m === 'approx' ? `해칭 ${g.hatchDate.slice(0, 7).replace('-', '.')}경` : `해칭 ${g.hatchDate.replace(/-/g, '.')}`;
+}
 const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const lsDel = k => { try { localStorage.removeItem(k); } catch {} };
 
 /* ---------- state ---------- */
 const S = {
   auth:'loading', user:null, conn:'ok', urls:new Map(),
+  farms:[], farm:null, role:null, members:[], invites:[], needFarm:false,
+  pub:new Map(), pubLoading:new Set(), join:new Map(),
   geckos:new Map(), clutches:new Map(), pairings:new Map(), settings:{...DEF},
   loaded:{g:false, c:false, p:false},
   logs:[], logGid:null, logsLoaded:false,
@@ -59,6 +89,8 @@ const S = {
   labSel:new Set(), labAll:false, labOut:[], setupDirty:false
 };
 const G = id => id ? S.geckos.get(id) : null;
+const can = need => need === 'admin' ? S.role === 'admin' : need === 'log' ? (S.role === 'admin' || S.role === 'keeper') : true;
+const pubVis = g => ({...PUB_DEF, ...((S.farm && S.farm.public_defaults) || {}), ...((g && g.publicFields) || {})});
 const gStatus = g => g.status || 'active';
 const gTitle = g => g ? (g.name || g.morph || g.code || '이름 없음') : '';
 const gLabel = g => g ? [g.code, g.name].filter(Boolean).join(' ') || g.morph || '이름 없음' : '';
@@ -96,20 +128,34 @@ function nextCode() {
 const appUrl = () => location.origin + location.pathname;
 const qrUrl = id => `${appUrl()}#g-${id}`;
 const photoUrl = g => (g && g.photo && S.urls.get(g.photo)) || '';
-const photoTag = (g, cls = 'thumb') => {
-  const ini = esc((g.code || g.name || '?').slice(-3)), u = photoUrl(g);
-  return `<span class="${cls}"><span>${ini}</span>${u ? `<img data-ph src="${esc(u)}" alt="" loading="lazy">` : ''}</span>`;
-};
+function fallbackUrl(farm) {
+  if (!farm) return '';
+  if (farm.placeholder === 'google') return farm.placeholder_url || '';
+  if (farm.placeholder === 'logo' && farm.logo_path) return S.urls.get(farm.logo_path) || '';
+  return '';
+}
+const fallbackFor = g => g && g._pub ? (g._fb || '') : fallbackUrl(S.farm);
+function photoTag(g, cls = 'thumb') {
+  const u = photoUrl(g);
+  if (u) return `<span class="${cls}"><img data-ph src="${esc(u)}" alt="" loading="lazy"></span>`;
+  const fb = fallbackFor(g);
+  if (fb) return `<span class="${cls} fb" title="사진 없음"><img data-ph src="${esc(fb)}" alt="" loading="lazy"></span>`;
+  return `<span class="${cls} def" title="사진 없음">${FOOT}</span>`;
+}
 
 /* ---------- server (Supabase) ---------- */
 let sb = null;
 async function q(p) { const {data, error} = await p; if (error) throw error; return data; }
 function errMsg(e) {
-  const m = String((e && (e.message || e.error_description)) || e || '');
+  const m = String((e && (e.message || e.error_description || e.details)) || e || '');
+  if (/last_admin/.test(m)) return '농장에는 관리자가 최소 한 명 있어야 합니다. 다른 구성원을 관리자로 바꾼 뒤 다시 시도하세요.';
+  if (/invite_used/.test(m)) return '이미 사용된 초대 링크입니다.';
+  if (/invite_expired/.test(m)) return '기간이 지난 초대 링크입니다.';
+  if (/invite_not_found/.test(m)) return '초대 링크가 올바르지 않습니다.';
   if (/fetch|network|load failed/i.test(m)) return '서버에 연결하지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도하세요.';
-  if (/jwt|session|not authenticated|auth/i.test(m)) return '로그인이 만료되었습니다. 페이지를 새로 고친 뒤 다시 로그인해 주세요.';
-  if (e && e.code === '42501' || /row-level security/i.test(m)) return '저장할 권한이 없습니다. 다시 로그인해 보세요.';
-  if (e && e.code === '42P01') return '데이터베이스 표가 없습니다. 설치 안내의 SQL을 먼저 실행해 주세요.';
+  if ((e && e.code === '42501') || /row-level security|permission denied/i.test(m)) return '이 작업을 할 권한이 없습니다. 농장 관리자에게 권한을 요청하세요.';
+  if ((e && (e.code === '42P01' || e.code === '42883' || e.code === 'PGRST202' || e.code === 'PGRST205')) || /does not exist|schema cache/i.test(m)) return '데이터베이스가 최신이 아닙니다. 안내드린 SQL(schema.sql)을 Supabase에서 다시 실행해 주세요.';
+  if (/jwt|session|not authenticated|not_signed_in/i.test(m)) return '로그인이 만료되었습니다. 페이지를 새로 고친 뒤 다시 로그인해 주세요.';
   return '저장하지 못했습니다. 잠시 후 다시 시도하세요.';
 }
 const nul = v => (v === '' || v === undefined) ? null : v;
@@ -117,21 +163,32 @@ const gFromRow = r => ({
   id:r.id, code:r.code || '', name:r.name || '', morph:r.morph || '', sex:r.sex || 'u', sexAt:r.sex_at, hatchDate:r.hatch_date,
   acquiredDate:r.acquired_date, source:r.source, sourceNote:r.source_note || '', sireId:r.sire_id, sireExt:r.sire_ext || '',
   damId:r.dam_id, damExt:r.dam_ext || '', notes:r.notes || '', photo:r.photo_path, status:r.status || 'active', sale:r.sale,
-  sample:r.sample, createdAt:Date.parse(r.created_at) || 0, last:{}
+  sample:r.sample, createdAt:Date.parse(r.created_at) || 0, last:{},
+  farmId:r.farm_id, hatchMode:r.hatch_mode || 'exact', publicOn:r.public_on !== false, publicFields:r.public_fields || null
 });
 const logFromRow = r => ({id:r.id, t:r.type, d:r.date, g:r.grams == null ? null : Number(r.grams), food:r.food, ate:r.ate, q:r.quality, n:r.note, _i:Date.parse(r.created_at) || 0});
-const logToRow = (gid, e) => ({gecko_id:gid, type:e.t, date:e.d, grams:e.t === 'weight' ? e.g : null, food:e.t === 'feed' ? (e.food || null) : null, ate:e.t === 'feed' ? (e.ate || 'all') : null, quality:nul(e.q), note:nul(e.n)});
+const logToRow = (gid, e) => ({gecko_id:gid, farm_id:S.farm && S.farm.id, type:e.t, date:e.d, grams:e.t === 'weight' ? e.g : null, food:e.t === 'feed' ? (e.food || null) : null, ate:e.t === 'feed' ? (e.ate || 'all') : null, quality:nul(e.q), note:nul(e.n)});
 const cFromRow = r => ({id:r.id, damId:r.dam_id, sireId:r.sire_id, sireNone:r.sire_none, sireExt:r.sire_ext || '', laidAt:r.laid_at, eggs:r.eggs, infertile:r.infertile, incubStart:r.incub_start, expectAt:r.expect_at, incubNote:r.incub_note || '', status:r.status, hatchAt:r.hatch_at, hatchedIds:r.hatched_ids || [], note:r.note || '', sample:r.sample});
 const pFromRow = r => ({id:r.id, maleId:r.male_id, femaleId:r.female_id, startAt:r.start_at, endAt:r.end_at, note:r.note || '', sample:r.sample});
 
 async function loadAll() {
   try {
-    const [gs, lat, cl, pr, st] = await Promise.all([
-      q(sb.from('geckos').select('*')),
-      q(sb.from('gecko_latest').select('*')),
-      q(sb.from('clutches').select('*')),
-      q(sb.from('pairings').select('*')),
-      q(sb.from('settings').select('*').maybeSingle())
+    const mem = await q(sb.from('farm_members').select('farm_id, role, farms(*)').eq('user_id', S.user.id));
+    S.farms = (mem || []).filter(m => m.farms).map(m => ({id:m.farm_id, role:m.role, farm:m.farms}))
+      .sort((x, y) => (x.farm.created_at || '').localeCompare(y.farm.created_at || ''));
+    S.pub.clear();
+    if (!S.farms.length) { S.needFarm = true; S.farm = null; S.role = null; S.loaded = {g:true, c:true, p:true}; S.conn = 'ok'; schedule(); return; }
+    S.needFarm = false;
+    const cur = S.farms.find(f => f.id === lsGet('gk.farm')) || S.farms[0];
+    S.farm = cur.farm; S.role = cur.role; lsSet('gk.farm', cur.id);
+    const fid = cur.id;
+    const [gs, lat, cl, pr, members, invites] = await Promise.all([
+      q(sb.from('geckos').select('*').eq('farm_id', fid)),
+      q(sb.from('gecko_latest').select('*').eq('farm_id', fid)),
+      q(sb.from('clutches').select('*').eq('farm_id', fid)),
+      q(sb.from('pairings').select('*').eq('farm_id', fid)),
+      q(sb.from('farm_members').select('*').eq('farm_id', fid).order('joined_at')),
+      cur.role === 'admin' ? q(sb.from('farm_invites').select('*').eq('farm_id', fid).is('used_at', null).order('created_at', {ascending:false})) : Promise.resolve([])
     ]);
     const geckos = new Map(gs.map(r => [r.id, gFromRow(r)]));
     for (const r of lat) {
@@ -141,23 +198,26 @@ async function loadAll() {
     S.geckos = geckos;
     S.clutches = new Map(cl.map(r => [r.id, cFromRow(r)]));
     S.pairings = new Map(pr.map(r => [r.id, pFromRow(r)]));
-    S.settings = st ? {feedAlertDays:st.feed_alert_days, foods:st.foods && st.foods.length ? st.foods : DEF.foods, codePrefix:st.code_prefix ?? DEF.codePrefix} : {...DEF};
+    const f = S.farm;
+    S.settings = {feedAlertDays:f.feed_alert_days ?? DEF.feedAlertDays, foods:f.foods && f.foods.length ? f.foods : DEF.foods, codePrefix:f.code_prefix ?? DEF.codePrefix};
+    S.members = members || []; S.invites = (invites || []).filter(i => Date.parse(i.expires_at) > Date.now());
     S.loaded = {g:true, c:true, p:true}; S.conn = 'ok';
     await refreshUrls();
-    onRoute(true);
+    onRoute();
   } catch (e) {
     S.conn = 'err'; S.connMsg = errMsg(e); S.loaded = {g:true, c:true, p:true};
   }
   schedule();
 }
-async function refreshUrls() {
-  const paths = [...new Set([...S.geckos.values()].map(g => g.photo).filter(Boolean))].filter(p => !S.urls.has(p));
-  if (!paths.length) return;
+async function signUrls(paths) {
+  paths = [...new Set(paths.filter(Boolean))].filter(p => !S.urls.has(p));
+  if (!paths.length || !sb) return;
   try {
     const {data} = await sb.storage.from('photos').createSignedUrls(paths, 60 * 60 * 24 * 7);
     (data || []).forEach(d => { if (d && d.signedUrl) S.urls.set(d.path, d.signedUrl); });
   } catch {}
 }
+const refreshUrls = () => signUrls([...[...S.geckos.values()].map(g => g.photo), S.farm && S.farm.logo_path]);
 async function loadLogs(id) {
   S.logGid = id;
   try {
@@ -180,24 +240,26 @@ function downloadBlob(blob, name) {
 async function backup() {
   toast('백업 파일을 만드는 중…');
   try {
-    const out = {app:'크레 개체 노트', exportedAt:new Date().toISOString(), account:S.user && S.user.email};
-    for (const t of ['geckos', 'clutches', 'pairings', 'settings']) out[t] = await q(sb.from(t).select('*'));
+    const fid = S.farm.id;
+    const out = {app:'크레 개체 노트', exportedAt:new Date().toISOString(), account:S.user && S.user.email, farm:S.farm};
+    out.members = S.members.map(m => ({email:m.email, display_name:m.display_name, role:m.role, joined_at:m.joined_at}));
+    for (const t of ['geckos', 'clutches', 'pairings']) out[t] = await q(sb.from(t).select('*').eq('farm_id', fid));
     out.logs = [];
-    for (let i = 0; ; i += 1000) { const r = await q(sb.from('logs').select('*').order('id').range(i, i + 999)); out.logs.push(...r); if (r.length < 1000) break; }
-    downloadBlob(new Blob([JSON.stringify(out, null, 2)], {type:'application/json'}), `크레개체노트_백업_${today()}.json`);
+    for (let i = 0; ; i += 1000) { const r = await q(sb.from('logs').select('*').eq('farm_id', fid).order('id').range(i, i + 999)); out.logs.push(...r); if (r.length < 1000) break; }
+    downloadBlob(new Blob([JSON.stringify(out, null, 2)], {type:'application/json'}), `크레개체노트_${safeName(S.farm.name)}_백업_${today()}.json`);
     toast('백업 파일을 내려받았습니다');
   } catch (e) { toast(errMsg(e), 'bad'); }
 }
 async function insertSamples() {
   const s = rid(), d = rid(), b = rid();
   const ago = n => { const t = new Date(); t.setDate(t.getDate() - n); return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`; };
-  const base = {sample:true, source:'buy', source_note:'예시 입양처'};
+  const fid = S.farm.id, base = {sample:true, farm_id:fid, source:'buy', source_note:'예시 입양처'};
   await q(sb.from('geckos').insert([
     {...base, id:s, code:'예시-01', name:'예시 수컷', morph:'할리퀸 핀스트라이프', sex:'m', sex_at:ago(970), hatch_date:ago(1236), acquired_date:ago(1138), sire_ext:'외부 수컷 · 익스트림 할리퀸', dam_ext:'외부 암컷 · 핀스트라이프', notes:'화면 확인용 예시 개체입니다. 설정에서 지울 수 있습니다.'},
     {...base, id:d, code:'예시-02', name:'예시 암컷', morph:'달마시안', sex:'f', sex_at:ago(920), hatch_date:ago(1183), acquired_date:ago(1088)},
     {...base, id:b, code:'예시-03', name:'', morph:'할리퀸', sex:'u', hatch_date:ago(105), source:'self', source_note:'', sire_id:s, dam_id:d}
   ]));
-  const L = (gid, t, n, x = {}) => ({id:rid(), gecko_id:gid, type:t, date:ago(n), grams:x.g ?? null, food:x.food ?? null, ate:x.ate ?? null, quality:x.q ?? null, note:x.n ?? null});
+  const L = (gid, t, n, x = {}) => ({id:rid(), gecko_id:gid, farm_id:fid, type:t, date:ago(n), grams:x.g ?? null, food:x.food ?? null, ate:x.ate ?? null, quality:x.q ?? null, note:x.n ?? null});
   const C = '슈퍼푸드(CGD)';
   await q(sb.from('logs').insert([
     L(b, 'note', 105, {n:'예시: 해칭 확인'}), L(b, 'weight', 100, {g:1.8}), L(b, 'weight', 79, {g:2.4}), L(b, 'weight', 58, {g:3.1}), L(b, 'weight', 37, {g:3.9}), L(b, 'weight', 16, {g:4.3}),
@@ -208,11 +270,11 @@ async function insertSamples() {
     L(d, 'shed', 23, {q:'stuck', n:'예시: 발가락 잔여 탈피 제거'}), L(d, 'feed', 10, {food:C, ate:'all'}), L(d, 'weight', 8, {g:47.1}), L(d, 'poop', 7, {q:'ok'}), L(d, 'feed', 6, {food:C, ate:'some'})
   ]));
   await q(sb.from('clutches').insert([
-    {id:rid(), sample:true, dam_id:d, sire_id:s, laid_at:ago(161), eggs:2, infertile:0, incub_start:ago(161), incub_note:'예시 인큐 조건', status:'hatched', hatch_at:ago(105), hatched_ids:[b]},
-    {id:rid(), sample:true, dam_id:d, sire_id:s, laid_at:ago(56), eggs:2, infertile:1, incub_start:ago(56), incub_note:'예시 인큐 조건', status:'incubating'},
-    {id:rid(), sample:true, dam_id:d, sire_none:true, laid_at:ago(260), eggs:2, infertile:2, status:'infertile', note:'예시: 합사 전 단독 산란'}
+    {id:rid(), sample:true, farm_id:fid, dam_id:d, sire_id:s, laid_at:ago(161), eggs:2, infertile:0, incub_start:ago(161), incub_note:'예시 인큐 조건', status:'hatched', hatch_at:ago(105), hatched_ids:[b]},
+    {id:rid(), sample:true, farm_id:fid, dam_id:d, sire_id:s, laid_at:ago(56), eggs:2, infertile:1, incub_start:ago(56), incub_note:'예시 인큐 조건', status:'incubating'},
+    {id:rid(), sample:true, farm_id:fid, dam_id:d, sire_none:true, laid_at:ago(260), eggs:2, infertile:2, status:'infertile', note:'예시: 합사 전 단독 산란'}
   ]));
-  await q(sb.from('pairings').insert([{id:rid(), sample:true, male_id:s, female_id:d, start_at:ago(241)}]));
+  await q(sb.from('pairings').insert([{id:rid(), sample:true, farm_id:fid, male_id:s, female_id:d, start_at:ago(241)}]));
   await refresh();
 }
 
@@ -220,6 +282,8 @@ async function insertSamples() {
 function route() {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith('g-')) return {v:'gecko', id:h.slice(2)};
+  if (h.startsWith('pub-')) return {v:'pub', id:h.slice(4)};
+  if (h.startsWith('join-')) return {v:'join', code:h.slice(5)};
   if (h.startsWith('map-')) return {v:'map', id:h.slice(4)};
   if (['breeding', 'sales', 'setup', 'labels', 'map'].includes(h)) return {v:h};
   return {v:'list'};
@@ -227,14 +291,32 @@ function route() {
 function go(h) { if (location.hash.slice(1) === h) render(); else location.hash = h; }
 let pending = false;
 function schedule() { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; render(); }); }
+const NEED = {
+  'new-gecko':'admin', 'edit-gecko':'admin', 'sale':'admin', 'sale-cancel':'admin', 'new-pair':'admin', 'edit-pair':'admin',
+  'new-clutch':'admin', 'edit-clutch':'admin', 'load-samples':'admin', 'clear-samples':'admin', 'backup':'admin',
+  'make-invite':'admin', 'revoke-invite':'admin', 'remove-member':'admin',
+  'log':'log', 'log-edit':'log', 'bulk':'log', 'bulk-feed':'log', 'feed-over':'log'
+};
+function setTabs(tab) { document.querySelectorAll('.tabs a').forEach(a => a.setAttribute('aria-current', a.dataset.tab === tab ? 'page' : 'false')); }
 function render() {
-  const r = route(), view = $('#view');
-  document.body.classList.toggle('signed-out', S.auth !== 'in');
-  if (S.auth !== 'in') { view.innerHTML = vAuth(); view.classList.remove('bulking'); return; }
+  const r = route(), view = $('#view'), signedIn = S.auth === 'in';
+  document.body.classList.toggle('signed-out', !signedIn || S.needFarm);
+  const brandSub = $('.brand i'); if (brandSub) brandSub.textContent = signedIn && S.farm ? S.farm.name : 'Correlophus ciliatus';
+  view.classList.remove('bulking');
+  S.chartData = null;
+  if (!signedIn) {
+    if ((S.auth === 'out') && (r.v === 'gecko' || r.v === 'pub')) { view.innerHTML = vPublic(r.id, false); drawChart(); return; }
+    if (S.auth === 'out' && r.v === 'join') { view.innerHTML = vJoin(r.code); return; }
+    view.innerHTML = vAuth(); return;
+  }
+  if (r.v === 'join') { view.innerHTML = vJoin(r.code); return; }
+  if (!S.loaded.g) { view.innerHTML = loadingHTML(); return; }
+  if (S.conn === 'err') { view.innerHTML = connErr(); return; }
+  if (S.needFarm) { view.innerHTML = vOnboard(); wireOnboard(); return; }
   if (r.v === 'setup' && S.setupDirty && $('#setform')) return;
   let html;
-  if (S.conn === 'err') html = connErr();
-  else if (r.v === 'gecko') html = vGecko(r.id);
+  if (r.v === 'gecko') html = G(r.id) ? vGecko(r.id) : vPublic(r.id, false);
+  else if (r.v === 'pub') html = vPublic(r.id, true);
   else if (r.v === 'map') html = vMap(r.id);
   else if (r.v === 'breeding') html = vBreeding();
   else if (r.v === 'sales') html = vSales();
@@ -243,14 +325,16 @@ function render() {
   else html = vList();
   view.innerHTML = html;
   view.classList.toggle('bulking', S.bulk && r.v === 'list');
-  const tab = r.v === 'gecko' || r.v === 'labels' ? 'list' : r.v;
-  document.querySelectorAll('.tabs a').forEach(a => a.setAttribute('aria-current', a.dataset.tab === tab ? 'page' : 'false'));
-  if (r.v === 'gecko') drawChart();
+  view.querySelectorAll('[data-act]').forEach(el => { const n = NEED[el.dataset.act]; if (n && !can(n) && !el.classList.contains('rowbtn')) el.hidden = true; });
+  view.querySelectorAll('.qlog,.actions,.acts').forEach(el => { if (el.children.length && ![...el.children].some(c => !c.hidden)) el.hidden = true; });
+  setTabs(r.v === 'gecko' || r.v === 'labels' || r.v === 'pub' ? 'list' : r.v);
+  if (r.v === 'gecko' || r.v === 'pub') drawChart();
   if (r.v === 'setup') wireSetup();
   if (r.v === 'map') drawMap();
 }
 const loadingHTML = (t = '불러오는 중…') => `<div class="loading">${t}</div>`;
 const connErr = () => `<div class="empty"><h2>데이터를 불러오지 못했습니다</h2><p>${esc(S.connMsg || '')}</p><button class="btn primary" data-act="retry">다시 시도</button></div>`;
+const GOOGLE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18"><path fill="currentColor" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="currentColor" opacity=".8" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="currentColor" opacity=".6" d="M6.4 14a6 6 0 0 1 0-3.9V7.4H3.1a10 10 0 0 0 0 9.1z"/><path fill="currentColor" opacity=".7" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.4L6.4 10C7.2 7.7 9.4 6 12 6z"/></svg>';
 function vAuth() {
   if (S.auth === 'loading') return loadingHTML('로그인 상태를 확인하는 중…');
   if (S.auth === 'unconfigured') return `<div class="empty"><h2>서버 연결 정보가 없습니다</h2><p><code>config.js</code> 파일에 Supabase 주소(Project URL)와 공개 키(Publishable key)를 넣어야 합니다.</p></div>`;
@@ -258,10 +342,143 @@ function vAuth() {
     <p class="auth-eyebrow">Correlophus ciliatus</p>
     <h1 class="auth-title">크레 개체 노트</h1>
     <p class="auth-text">개체 등록, 무게·급여 기록, 혈통과 브리딩을 휴대폰과 PC에서 함께 관리합니다.</p>
-    <button class="btn primary auth-btn" data-act="login"><svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18"><path fill="currentColor" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="currentColor" opacity=".8" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="currentColor" opacity=".6" d="M6.4 14a6 6 0 0 1 0-3.9V7.4H3.1a10 10 0 0 0 0 9.1z"/><path fill="currentColor" opacity=".7" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.4L6.4 10C7.2 7.7 9.4 6 12 6z"/></svg>Google 계정으로 로그인</button>
+    <button class="btn primary auth-btn" data-act="login">${GOOGLE_SVG}Google 계정으로 로그인</button>
     ${S.authErr ? `<p class="err">${esc(S.authErr)}</p>` : ''}
     <p class="hint">등록된 계정만 들어올 수 있습니다. 한 번 로그인하면 이 기기에서는 로그인이 유지됩니다.</p>
   </section>`;
+}
+
+/* ---------- public card (QR) ---------- */
+const pubKey = (id, preview) => id + (preview ? ':p' : '');
+async function fetchPublic(id, preview) {
+  const k = pubKey(id, preview);
+  if (S.pubLoading.has(k) || !sb) return;
+  S.pubLoading.add(k);
+  try {
+    const d = await q(sb.rpc('public_gecko', {gid:id, preview:!!preview}));
+    if (d && !d.private) {
+      const paths = [d.photo, d.farm && d.farm.logo];
+      const walk = n => { if (n && n.kind === 'id') { paths.push(n.photo); walk(n.sire); walk(n.dam); } };
+      walk(d.sire); walk(d.dam);
+      await signUrls(paths);
+    }
+    S.pub.set(k, {data:d});
+  } catch (e) { S.pub.set(k, {err:errMsg(e)}); }
+  S.pubLoading.delete(k); schedule();
+}
+function vPublic(id, preview) {
+  const k = pubKey(id, preview), c = S.pub.get(k);
+  if (!c) { fetchPublic(id, preview); return loadingHTML('개체 정보를 불러오는 중…'); }
+  const top = preview ? `<div class="notice"><p><b>공개 카드 미리보기</b> · QR을 찍은 다른 사람에게 이렇게 보입니다.</p><a class="btn small" href="#g-${esc(id)}">개체 화면으로</a></div>` : '';
+  const signIn = S.auth === 'in' ? '' : `<button class="btn" data-act="login">내 개체 관리하기 (로그인)</button>`;
+  if (c.err) return `${top}<div class="empty"><h2>개체 정보를 불러오지 못했습니다</h2><p>${esc(c.err)}</p><button class="btn" data-act="pub-retry" data-id="${esc(id)}" data-preview="${preview ? 1 : ''}">다시 시도</button></div>`;
+  const d = c.data;
+  if (!d) return `${top}<div class="empty"><h2>개체를 찾을 수 없습니다</h2><p>삭제되었거나 QR이 가리키는 개체가 바뀌었을 수 있습니다.</p>${signIn}</div>`;
+  let other = '';
+  if (!preview && S.auth === 'in' && d.member && d.farm_id && (!S.farm || d.farm_id !== S.farm.id)) {
+    other = `<div class="notice"><p>내가 속한 다른 농장 <b>${esc(d.farm_name || '')}</b>의 개체입니다. 그 농장으로 전환하면 관리 화면이 열립니다.</p><button class="btn small primary" data-act="switch-farm" data-farm="${esc(d.farm_id)}" data-go="g-${esc(id)}">그 농장으로 전환</button></div>`;
+  }
+  if (d.private) return `${top}${other}<div class="empty"><h2>공개되지 않은 개체입니다</h2><p>이 개체는 공개 카드가 꺼져 있어 농장 구성원만 볼 수 있습니다.</p>${signIn}</div>`;
+  const vis = d.vis || {}, farm = d.farm || null;
+  const fb = farm ? (farm.placeholder === 'google' ? (farm.placeholder_url || '') : farm.placeholder === 'logo' && farm.logo ? (S.urls.get(farm.logo) || '') : '') : '';
+  const pg = {id:d.id, code:d.code || '', name:d.name || '', morph:d.morph || '', sex:d.sex || 'u', photo:d.photo, hatchDate:d.hatch_date, hatchMode:d.hatch_mode, _pub:true, _fb:fb};
+  const sx = SEX[pg.sex] || SEX.u;
+  const real = photoUrl(pg);
+  const photo = real ? `<img class="hero-photo" data-ph src="${esc(real)}" alt="${esc(gTitle(pg))} 사진">`
+    : `<div class="hero-photo ph-empty${fb ? ' has-fb' : ''}">${fb ? `<img data-ph src="${esc(fb)}" alt="" referrerpolicy="no-referrer">` : FOOT}<span class="ph-tag">사진 없음</span></div>`;
+  let h = `${top}${other}<article class="pcard">`;
+  if (farm) {
+    const logo = farm.logo && S.urls.get(farm.logo);
+    h += `<header class="pc-farm">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : `<span class="pc-ini">${esc((farm.name || '?').slice(0, 1))}</span>`}<span><span class="pc-k">브리더</span><b>${esc(farm.name || '')}</b></span></header>`;
+  }
+  h += `<section class="dhead"><div class="ph">${photo}</div><div class="dinfo">
+      <div class="dcode"><span>${esc(pg.code || '번호 없음')}</span>${d.sale ? `<span class="pill">분양 완료</span>` : ''}</div>
+      <h1 class="dname">${esc(gTitle(pg))}</h1>
+      <div class="dsub"><span class="sex ${sx.c}">${sx.s} ${sx.t}</span> · ${esc(pg.morph || '모프 미기록')}</div>
+      ${vis.hatch ? `<dl class="facts"><dt>해칭일</dt><dd>${esc(hatchText(pg))} <span class="muted">${esc(hatchAge(pg))}</span></dd></dl>` : ''}
+    </div></section>`;
+  if (vis.lineage) {
+    const pref = n => !n ? {kind:'none'} : n.kind === 'id' ? {kind:'id', g:{id:n.id, code:n.code || '', name:n.name || '', morph:n.morph || '', sex:n.sex || 'u', photo:n.photo, _pub:true, _fb:fb}}
+      : n.kind === 'private' ? {kind:'ext', label:'비공개 개체'} : n.kind === 'ext' ? {kind:'ext', label:n.label} : {kind:'none'};
+    const s = d.sire || {}, m = d.dam || {};
+    h += `<section class="panel"><div class="ph3"><h3>혈통</h3></div>${pedTree(pg, pref(d.sire), pref(d.dam), pref(s.sire), pref(s.dam), pref(m.sire), pref(m.dam))}<p class="hint">개체를 누르면 그 개체의 공개 카드로 이동합니다. 점선은 목록에 없거나 비공개인 개체입니다.</p></section>`;
+  }
+  if (vis.weight && Array.isArray(d.weights)) {
+    const ws = d.weights.map((w, i) => ({d:w.d, g:Number(w.g), _i:i}));
+    S.chartData = ws;
+    const lw = ws[ws.length - 1];
+    h += `<section class="panel"><div class="ph3"><h3>무게 변화</h3></div>${!ws.length ? '<p class="muted">무게 기록이 없습니다.</p>' : `<div class="wsum"><span class="big">${fmtG(lw.g)}<small>g</small></span><span class="muted">${fmtD(lw.d)}</span></div>${ws.length > 1 ? '<div class="wchart" id="wchart"></div>' : ''}`}</section>`;
+  }
+  if (vis.care && Array.isArray(d.care)) {
+    h += `<section class="panel"><div class="ph3"><h3>최근 관리 기록</h3></div>${d.care.length ? `<ul class="rows">${d.care.map(e => `<li class="tl-row nobtn"><span class="td">${fmtD(e.d)}</span><span class="tt t-${esc(e.t)}">${LOGT[e.t] || ''}</span><span class="tx">${logLine(e)}</span></li>`).join('')}</ul>` : '<p class="muted">기록이 없습니다.</p>'}</section>`;
+  }
+  if (d.sale) {
+    const sl = d.sale;
+    h += `<section class="panel"><div class="ph3"><h3>분양 정보</h3></div><dl class="facts">${sl.date ? `<dt>분양일</dt><dd>${fmtD(sl.date)}</dd>` : ''}${sl.price ? `<dt>분양가</dt><dd>${fmtWon(sl.price)}</dd>` : ''}${sl.to ? `<dt>분양받은 분</dt><dd>${esc(sl.to)}</dd>` : ''}</dl></section>`;
+  }
+  if (vis.notes && d.notes) h += `<section class="panel"><div class="ph3"><h3>메모</h3></div><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(d.notes)}</p></section>`;
+  h += `<footer class="pc-foot"><span>크레 개체 노트 공개 카드${farm ? ` · ${esc(farm.name || '')}에서 공개한 정보입니다` : ''}</span>${signIn}</footer></article>`;
+  return h;
+}
+
+/* ---------- invite & first farm ---------- */
+async function fetchJoin(code) {
+  if (S.join.has(code) || !sb) return;
+  S.join.set(code, {loading:true});
+  try { S.join.set(code, {data:await q(sb.rpc('invite_info', {c:code}))}); }
+  catch (e) { S.join.set(code, {err:errMsg(e)}); }
+  schedule();
+}
+function vJoin(code) {
+  const c = S.join.get(code);
+  if (!c || c.loading) { fetchJoin(code); return loadingHTML('초대 정보를 확인하는 중…'); }
+  if (c.err) return `<div class="empty"><h2>초대 정보를 확인하지 못했습니다</h2><p>${esc(c.err)}</p></div>`;
+  const i = c.data || {};
+  if (!i.ok) {
+    const why = {not_found:'초대 링크가 올바르지 않습니다.', used:'이미 사용된 초대 링크입니다. 관리자에게 새 링크를 요청하세요.', expired:'기간(7일)이 지난 초대 링크입니다. 관리자에게 새 링크를 요청하세요.'}[i.reason] || '초대 링크를 쓸 수 없습니다.';
+    return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm || '초대 링크')}</h1><p class="auth-text">${why}</p>${S.auth === 'in' ? '<a class="btn" href="#list">개체 목록으로</a>' : ''}</section>`;
+  }
+  if (S.auth !== 'in') {
+    return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm)}</h1>
+      <p class="auth-text"><b>${ROLE[i.role]}</b> 권한으로 초대받았습니다. 구글 계정으로 로그인하면 참여할 수 있습니다.</p>
+      <button class="btn primary auth-btn" data-act="login">${GOOGLE_SVG}Google 계정으로 로그인</button>
+      <p class="hint">초대한 관리자가 내 구글 계정을 사용자로 등록해 두어야 로그인할 수 있습니다.</p></section>`;
+  }
+  if (i.member) return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm)}</h1><p class="auth-text">이미 이 농장의 구성원입니다. 설정에서 농장을 전환할 수 있습니다.</p><a class="btn" href="#setup">설정으로</a></section>`;
+  return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm)}</h1>
+    <p class="auth-text"><b>${ROLE[i.role]}</b> 권한으로 참여합니다. ${ROLE_HINT[i.role]}.</p>
+    <button class="btn primary auth-btn" data-act="accept-invite" data-code="${esc(code)}">참여하기</button>
+    ${S.needFarm ? '' : '<a class="btn" href="#list">나중에</a>'}</section>`;
+}
+function vOnboard() {
+  return `<section class="auth"><p class="auth-eyebrow">시작하기</p><h1 class="auth-title">내 농장 만들기</h1>
+    <p class="auth-text">개체는 농장 단위로 관리합니다. 브리더 이름이나 브랜드 이름을 정해 주세요. 나중에 설정에서 바꿀 수 있습니다.</p>
+    <form id="onboard" class="form" style="width:100%" novalidate>
+      <div class="field"><label for="ob-name">농장 이름</label><input id="ob-name" placeholder="예: OO 크레스티드" autocomplete="off"></div>
+      <p class="err" hidden></p>
+      <button class="btn primary auth-btn" type="submit" id="ob-save">농장 만들기</button>
+    </form>
+    <p class="hint">다른 농장에 초대받았다면 받은 초대 링크를 다시 열어 주세요.</p></section>`;
+}
+function wireOnboard() {
+  const f = $('#onboard'); if (!f || f.dataset.w) return; f.dataset.w = 1;
+  f.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const btn = $('#ob-save'); busy(btn, true, '만드는 중…');
+    try { await createFarm($('#ob-name').value.trim()); }
+    catch (e) { busy(btn, false); const er = f.querySelector('.err'); er.textContent = errMsg(e); er.hidden = false; }
+  });
+}
+async function createFarm(name) {
+  const fid = await q(sb.rpc('create_farm', {fname:name || '내 농장'}));
+  lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('list'); toast('농장을 만들었습니다');
+}
+function resetFarmView() {
+  S.loaded = {g:false, c:false, p:false}; S.logGid = null; S.logs = []; S.bulk = false; S.sel.clear();
+  S.labSel.clear(); S.labInit = false; S.labOut = []; MM.viewKey = ''; MM.collapsed.clear(); S.setupDirty = false;
+}
+async function switchFarm(fid, goTo) {
+  lsSet('gk.farm', fid); resetFarmView(); render(); await loadAll(); if (goTo) go(goTo); else render();
 }
 
 /* ---------- list ---------- */
@@ -313,7 +530,7 @@ function vList() {
 }
 function card(g) {
   const sx = SEX[g.sex || 'u'], fi = feedInfo(g), st = gStatus(g), w = g.last && g.last.weight;
-  const sub = [g.name ? (g.morph || '모프 미기록') : null, g.hatchDate ? ageText(g.hatchDate) : null].filter(Boolean).join(' · ');
+  const sub = [g.name ? (g.morph || '모프 미기록') : null, hatchAge(g) || null].filter(Boolean).join(' · ');
   let pills = w ? `<span class="pill">${fmtG(w.g)} g</span>` : '';
   if (st !== 'active') pills += `<span class="pill">${STATUS[st]}</span>`;
   else {
@@ -337,19 +554,21 @@ function vGecko(id) {
   const src = SRC[g.source] ? SRC[g.source] + (g.sourceNote ? ` · ${g.sourceNote}` : '') : (g.sourceNote || '—');
   let h = `<a class="back" href="#list">← 개체 목록</a>
   <section class="dhead">
-    <div class="ph">${photoUrl(g) ? `<img class="hero-photo" data-ph src="${esc(photoUrl(g))}" alt="${esc(gTitle(g))} 사진">` : `<button class="hero-photo nophoto" data-act="edit-gecko" data-id="${id}">+ 사진 추가</button>`}</div>
+    <div class="ph">${photoUrl(g) ? `<img class="hero-photo" data-ph src="${esc(photoUrl(g))}" alt="${esc(gTitle(g))} 사진">`
+      : `<div class="hero-photo ph-empty${fallbackFor(g) ? ' has-fb' : ''}">${fallbackFor(g) ? `<img data-ph src="${esc(fallbackFor(g))}" alt="" referrerpolicy="no-referrer">` : FOOT}<span class="ph-tag">사진 없음</span>${can('admin') ? `<button class="btn small ph-add" data-act="edit-gecko" data-id="${id}">+ 사진 추가</button>` : ''}</div>`}</div>
     <div class="dinfo">
-      <div class="dcode"><span>${esc(g.code || '번호 없음')}</span>${g.sample ? '<span class="tag">예시</span>' : ''}${st !== 'active' ? `<span class="pill">${STATUS[st]}</span>` : ''}</div>
+      <div class="dcode"><span>${esc(g.code || '번호 없음')}</span>${g.sample ? '<span class="tag">예시</span>' : ''}${st !== 'active' ? `<span class="pill">${STATUS[st]}</span>` : ''}${g.publicOn ? '' : '<span class="pill">공개 카드 꺼짐</span>'}</div>
       <h1 class="dname">${esc(gTitle(g))}</h1>
       <div class="dsub"><span class="sex ${sx.c}">${sx.s} ${sx.t}</span>${g.sexAt ? ` <span class="muted">(${fmtD(g.sexAt)} 확인)</span>` : ''} · ${esc(g.morph || '모프 미기록')}</div>
       <dl class="facts">
-        <dt>해칭일</dt><dd>${g.hatchDate ? `${fmtD(g.hatchDate)} <span class="muted">${ageText(g.hatchDate)}</span>` : '—'}</dd>
+        <dt>해칭일</dt><dd>${esc(hatchText(g))} <span class="muted">${esc(hatchAge(g))}</span></dd>
         <dt>입양일</dt><dd>${fmtD(g.acquiredDate)}</dd>
         <dt>출처</dt><dd>${esc(src)}</dd>
       </dl>
       <div class="actions">
         <button class="btn" data-act="edit-gecko" data-id="${id}">정보 수정</button>
         <button class="btn" data-act="qr" data-id="${id}">QR 라벨</button>
+        <a class="btn" href="#pub-${id}">공개 카드 보기</a>
         ${st === 'active' ? `<button class="btn" data-act="sale" data-id="${id}">분양 처리</button>` : ''}
       </div>
     </div>
@@ -363,6 +582,7 @@ function vGecko(id) {
   </section>`;
   const loaded = S.logGid === id && S.logsLoaded;
   const weights = loaded ? S.logs.filter(e => e.t === 'weight').slice().sort((a, b) => a.d.localeCompare(b.d) || a._i - b._i) : [];
+  S.chartData = weights;
   let wsum = '';
   if (weights.length) {
     const lw = weights[weights.length - 1], pw = weights[weights.length - 2];
@@ -399,6 +619,9 @@ function pedigree(g) {
   const s = parentRef(g, 'sire'), d = parentRef(g, 'dam');
   const up = r => r.kind === 'id' ? [parentRef(r.g, 'sire'), parentRef(r.g, 'dam')] : [{kind:'none'}, {kind:'none'}];
   const [ss, sd] = up(s), [ds, dd] = up(d);
+  return pedTree(g, s, d, ss, sd, ds, dd);
+}
+function pedTree(g, s, d, ss, sd, ds, dd) {
   const leaf = (r, role) => `<div class="pit">${pedNode(r, role)}</div>`;
   return `<div class="ped-scroll"><div class="ped-cols"><span>본 개체</span><span>부모</span><span>조부모</span></div>
     <div class="ped">${pedNode({kind:'id', g}, '', true)}<div class="pbr">
@@ -477,8 +700,7 @@ function niceRange(min, max) {
 }
 function drawChart() {
   const box = $('#wchart'); if (!box) return;
-  const r = route(); if (r.v !== 'gecko') return;
-  const pts = S.logs.filter(e => e.t === 'weight').slice().sort((a, b) => a.d.localeCompare(b.d) || a._i - b._i);
+  const pts = S.chartData || [];
   if (pts.length < 2) return;
   const W = Math.max(260, box.clientWidth), H = 220, L = 42, R = 18, T = 26, B = 26;
   const xs = pts.map(p => dnum(p.d)); let x0 = Math.min(...xs), x1 = Math.max(...xs); if (x1 === x0) { x0 -= 1; x1 += 1; }
@@ -561,41 +783,129 @@ function vSales() {
 }
 
 /* ---------- setup ---------- */
+const roleOpts = cur => Object.entries(ROLE).map(([k, t]) => `<option value="${k}"${cur === k ? ' selected' : ''}>${t}</option>`).join('');
+const inviteLink = code => `${appUrl()}#join-${code}`;
 function vSetup() {
-  const s = S.settings, sampleN = [...S.geckos.values()].filter(g => g.sample).length;
-  return `<div class="vhead"><div><h1 class="vtitle">설정</h1></div></div>
-  <form id="setform" class="panel form" novalidate>
-    <div class="grid2">
-      <div class="field"><label for="s-days">급여 확인 기준 (일)</label><input id="s-days" type="number" min="1" max="60" inputmode="numeric" value="${esc(s.feedAlertDays ?? DEF.feedAlertDays)}"><p class="hint">마지막 급여 후 이 날수가 지나면 목록 위에 표시합니다.</p></div>
-      <div class="field"><label for="s-prefix">개체번호 앞글자</label><input id="s-prefix" value="${esc(s.codePrefix ?? DEF.codePrefix)}" autocomplete="off"><p class="hint">새 개체에 ${esc((s.codePrefix ?? DEF.codePrefix) + '001')}처럼 번호를 제안합니다.</p></div>
-    </div>
-    <div class="field"><label for="s-foods">먹이 목록</label><input id="s-foods" value="${esc((s.foods || DEF.foods).join(', '))}" autocomplete="off"><p class="hint">급여 기록에서 고를 먹이입니다. 쉼표(,)로 구분합니다.</p></div>
-    <p class="err" id="s-err" hidden></p>
-    <div class="sh-foot"><button class="btn primary" type="submit" id="s-save">설정 저장</button></div>
-  </form>
-  <section class="panel"><div class="ph3"><h3>백업</h3></div>
-    <p class="hint">개체·기록·산란·메이팅·설정 전체를 파일 하나(JSON)로 내려받습니다. 사진 파일은 포함되지 않습니다. 가끔 한 번씩 받아 두면 안심입니다.</p>
-    <div class="actions"><button class="btn" data-act="backup">전체 데이터 백업 내려받기</button></div>
-  </section>
-  <section class="panel"><div class="ph3"><h3>계정</h3></div>
+  const s = S.settings, f = S.farm, admin = S.role === 'admin', me = S.user && S.user.id;
+  const sampleN = [...S.geckos.values()].filter(g => g.sample).length;
+  const logo = f.logo_path && S.urls.get(f.logo_path);
+  const pd = {...PUB_DEF, ...(f.public_defaults || {})};
+  const gAvatar = S.user && S.user.user_metadata && (S.user.user_metadata.avatar_url || S.user.user_metadata.picture);
+  let h = `<div class="vhead"><div><h1 class="vtitle">설정</h1><p class="vsub">${esc(f.name)} · 내 권한: <b>${ROLE[S.role]}</b></p></div></div>`;
+  if (admin) {
+    h += `<form id="setform" class="panel form" novalidate>
+      <div class="ph3"><h3>농장과 브랜드</h3></div>
+      <div class="field"><label for="s-name">농장 이름</label><input id="s-name" value="${esc(f.name)}" autocomplete="off"><p class="hint">공개 카드에 ‘브리더’로 표시됩니다.</p></div>
+      <div class="photo-pick"><div class="pp-prev logo" id="s-logo-prev">${logo ? `<img src="${esc(logo)}" alt="">` : '<span>로고 없음</span>'}</div>
+        <div class="pp-ctl"><span class="lbl">브랜드 로고</span><div class="actions"><label class="btn small" for="s-logo">${logo ? '로고 바꾸기' : '로고 올리기'}</label>${logo ? '<button type="button" class="btn small" id="s-logo-del">로고 빼기</button>' : ''}</div><input id="s-logo" type="file" accept="image/*" hidden><p class="hint" id="s-logo-st">정사각형에 가까운 이미지가 잘 어울립니다.</p></div></div>
+      <div class="field"><span class="lbl">사진이 없는 개체에 보여 줄 이미지</span>
+        <div class="seg radio">${[['logo', '브랜드 로고'], ['google', '내 구글 프로필'], ['default', '기본 게코 그림']].map(([k, t]) => `<label><input type="radio" name="s-ph" value="${k}"${(f.placeholder || 'logo') === k ? ' checked' : ''}${k === 'google' && !gAvatar ? ' disabled' : ''}><span>${t}</span></label>`).join('')}</div>
+        <p class="hint">로고를 고르고 로고를 올리지 않았다면 기본 게코 그림이 나옵니다. 어느 경우든 ‘사진 없음’ 표시가 함께 붙습니다.</p></div>
+      <div class="ph3"><h3>QR 공개 카드 기본값</h3></div>
+      <p class="hint">항상 공개: 사진, 개체번호, 이름, 모프, 성별. 아래 항목은 여기서 정한 값이 기본이고, 개체마다 따로 바꿀 수 있습니다. 분양받은 분의 연락처는 공개되지 않습니다.</p>
+      <div class="pubgrid">${PUBF.map(([k, t]) => `<label class="check"><input type="checkbox" name="s-pub" value="${k}"${pd[k] ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <div class="ph3"><h3>기록</h3></div>
+      <div class="grid2">
+        <div class="field"><label for="s-days">급여 확인 기준 (일)</label><input id="s-days" type="number" min="1" max="60" inputmode="numeric" value="${esc(s.feedAlertDays ?? DEF.feedAlertDays)}"><p class="hint">마지막 급여 후 이 날수가 지나면 목록 위에 표시합니다.</p></div>
+        <div class="field"><label for="s-prefix">개체번호 앞글자</label><input id="s-prefix" value="${esc(s.codePrefix ?? DEF.codePrefix)}" autocomplete="off"><p class="hint">새 개체에 ${esc((s.codePrefix ?? DEF.codePrefix) + '001')}처럼 번호를 제안합니다.</p></div>
+      </div>
+      <div class="field"><label for="s-foods">먹이 목록</label><input id="s-foods" value="${esc((s.foods || DEF.foods).join(', '))}" autocomplete="off"><p class="hint">쉼표(,)로 구분합니다.</p></div>
+      <p class="err" id="s-err" hidden></p>
+      <div class="sh-foot"><button class="btn primary" type="submit" id="s-save">설정 저장</button></div>
+    </form>`;
+  } else {
+    h += `<section class="panel"><div class="ph3"><h3>농장</h3></div><div class="farmline">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : ''}<b>${esc(f.name)}</b></div><p class="hint">농장 설정은 관리자만 바꿀 수 있습니다.</p></section>`;
+  }
+  h += `<section class="panel"><div class="ph3"><h3>구성원</h3><span class="hint">${S.members.length}명</span></div>
+    <ul class="rows">${S.members.map(m => {
+      const mine = m.user_id === me, nm = m.display_name || m.email || '이름 없음';
+      return `<li class="mem"><span class="mem-av">${m.avatar_url ? `<img data-ph src="${esc(m.avatar_url)}" alt="" referrerpolicy="no-referrer">` : ''}<span>${esc(nm.slice(0, 1))}</span></span>
+        <span class="mem-t"><b>${esc(nm)}</b>${mine ? ' <span class="pill good">나</span>' : ''}<small>${esc(m.email || '')}</small></span>
+        <span class="mem-r">${admin && !mine ? `<select data-chg="member-role" data-uid="${esc(m.user_id)}" aria-label="${esc(nm)} 권한">${roleOpts(m.role)}</select><button class="icon-btn" data-act="remove-member" data-uid="${esc(m.user_id)}">내보내기</button>` : `<span class="pill">${ROLE[m.role]}</span>`}</span></li>`;
+    }).join('')}</ul>`;
+  if (admin) {
+    h += `<div class="invite"><div class="field"><label for="inv-role">초대할 권한</label><select id="inv-role">${roleOpts('keeper')}</select></div><button class="btn primary" data-act="make-invite">초대 링크 만들기</button></div>
+      <p class="hint">관리자: ${ROLE_HINT.admin} · 기록 담당: ${ROLE_HINT.keeper} · 보기 전용: ${ROLE_HINT.viewer}</p>
+      ${S.invites.length ? `<div><div class="lbl" style="margin-bottom:4px">사용 대기 중인 초대 링크</div><ul class="rows">${S.invites.map(i => `<li class="inv"><span><b>${ROLE[i.role]}</b> <span class="hint">· ${fmtD(i.expires_at.slice(0, 10))}까지</span></span><span class="acts"><button class="btn small" data-act="copy-invite" data-code="${esc(i.code)}">링크 복사</button><button class="icon-btn" data-act="revoke-invite" data-code="${esc(i.code)}">취소</button></span></li>`).join('')}</ul></div>` : ''}
+      <p class="hint">구글 로그인이 ‘테스트’ 상태라면, 초대받는 분의 구글 계정을 Google Cloud 콘솔의 테스트 사용자에 먼저 추가해야 로그인할 수 있습니다.</p>`;
+  }
+  h += `</section>`;
+  h += `<section class="panel"><div class="ph3"><h3>내 농장</h3></div>
+    ${S.farms.length > 1 ? `<div class="field"><label for="farm-sw">지금 보고 있는 농장</label><select id="farm-sw" data-chg="farm-switch">${S.farms.map(x => `<option value="${esc(x.id)}"${x.id === f.id ? ' selected' : ''}>${esc(x.farm.name)} (${ROLE[x.role]})</option>`).join('')}</select></div>` : ''}
+    <div class="actions"><button class="btn" data-act="new-farm">새 농장 만들기</button><button class="btn danger" data-act="leave-farm">이 농장에서 나가기</button></div>
+    <p class="hint">나가면 이 농장의 개체를 더 이상 볼 수 없습니다. 농장에는 관리자가 최소 한 명 있어야 합니다.</p></section>`;
+  if (admin) h += `<section class="panel"><div class="ph3"><h3>백업</h3></div>
+    <p class="hint">이 농장의 개체·기록·산란·메이팅·설정을 파일 하나(JSON)로 내려받습니다. 사진 파일은 포함되지 않습니다. 가끔 한 번씩 받아 두면 안심입니다.</p>
+    <div class="actions"><button class="btn" data-act="backup">전체 데이터 백업 내려받기</button>${sampleN ? `<button class="btn danger" data-act="clear-samples">예시 개체 ${sampleN}마리 지우기</button>` : ''}</div></section>`;
+  h += `<section class="panel"><div class="ph3"><h3>계정</h3></div>
     <dl class="facts"><dt>로그인</dt><dd>${esc((S.user && S.user.email) || '—')}</dd><dt>QR 주소</dt><dd class="mono" style="font-size:13px">${esc(appUrl())}</dd></dl>
-    <div class="actions"><a class="btn" href="#labels">QR 라벨 만들기</a>${sampleN ? `<button class="btn danger" data-act="clear-samples">예시 개체 ${sampleN}마리 지우기</button>` : ''}<button class="btn" data-act="logout">로그아웃</button></div>
-  </section>`;
+    <div class="actions"><a class="btn" href="#labels">QR 라벨 만들기</a><button class="btn" data-act="logout">로그아웃</button></div></section>`;
+  return h;
 }
 function wireSetup() {
   const f = $('#setform'); if (!f || f.dataset.w) return; f.dataset.w = 1;
+  let logoPath = S.farm.logo_path || null;
   f.addEventListener('input', () => { S.setupDirty = true; });
+  f.addEventListener('change', () => { S.setupDirty = true; });
+  const lf = $('#s-logo');
+  lf.addEventListener('change', async () => {
+    const file = lf.files && lf.files[0]; if (!file) return;
+    const st = $('#s-logo-st'), save = $('#s-save');
+    save.disabled = true; st.textContent = '로고 올리는 중…';
+    try {
+      const blob = await compress(file, 800, 'image/png');
+      const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+      const path = `${S.user.id}/logo-${Date.now()}.${ext}`;
+      await q(sb.storage.from('photos').upload(path, blob, {contentType:blob.type || 'image/png', upsert:false, cacheControl:'3600'}));
+      const local = URL.createObjectURL(blob); S.urls.set(path, local); logoPath = path; S.setupDirty = true;
+      $('#s-logo-prev').innerHTML = `<img src="${local}" alt="">`; st.textContent = '로고를 올렸습니다. 설정 저장을 눌러야 반영됩니다.';
+    } catch { st.textContent = '로고를 올리지 못했습니다. 다른 이미지로 다시 시도해 주세요.'; }
+    finally { save.disabled = false; lf.value = ''; }
+  });
+  const ld = $('#s-logo-del');
+  if (ld) ld.addEventListener('click', () => { logoPath = null; S.setupDirty = true; $('#s-logo-prev').innerHTML = '<span>로고 없음</span>'; $('#s-logo-st').textContent = '설정 저장을 누르면 로고가 빠집니다.'; });
   f.addEventListener('submit', async ev => {
     ev.preventDefault();
     const days = parseInt($('#s-days').value, 10), err = $('#s-err');
     if (!(days >= 1 && days <= 60)) { err.textContent = '급여 확인 기준은 1~60일 사이로 입력하세요.'; err.hidden = false; return; }
     const foods = $('#s-foods').value.split(',').map(x => x.trim()).filter(Boolean);
+    const ph = (f.querySelector('input[name=s-ph]:checked') || {}).value || 'logo';
+    const meta = (S.user && S.user.user_metadata) || {};
+    const pub = Object.fromEntries(PUBF.map(([k]) => [k, !!f.querySelector(`input[name=s-pub][value=${k}]`).checked]));
     const btn = $('#s-save'); btn.disabled = true; btn.textContent = '저장 중…';
     try {
-      await q(sb.from('settings').upsert({owner_id:S.user.id, feed_alert_days:days, code_prefix:$('#s-prefix').value.trim(), foods:foods.length ? foods : DEF.foods, updated_at:new Date().toISOString()}));
+      const old = S.farm.logo_path;
+      await q(sb.from('farms').update({
+        name:$('#s-name').value.trim() || '내 농장', logo_path:logoPath, placeholder:ph,
+        placeholder_url:ph === 'google' ? (meta.avatar_url || meta.picture || null) : null,
+        public_defaults:pub, feed_alert_days:days, code_prefix:$('#s-prefix').value.trim(), foods:foods.length ? foods : DEF.foods,
+        updated_at:new Date().toISOString()
+      }).eq('id', S.farm.id));
+      if (old && old !== logoPath) sb.storage.from('photos').remove([old]).catch(() => {});
       S.setupDirty = false; toast('설정을 저장했습니다'); await refresh();
     } catch (e) { err.textContent = errMsg(e); err.hidden = false; btn.disabled = false; btn.textContent = '설정 저장'; }
   });
+}
+async function makeInvite() {
+  const role = ($('#inv-role') || {}).value || 'keeper';
+  const code = (rid() + rid()).slice(0, 16);
+  try {
+    await q(sb.from('farm_invites').insert({code, farm_id:S.farm.id, role}));
+    openInviteSheet(code, role); refresh();
+  } catch (e) { toast(errMsg(e), 'bad'); }
+}
+function openInviteSheet(code, role) {
+  const link = inviteLink(code);
+  const sh = openSheet(`<div class="form">${sheetHead('초대 링크')}
+    <p><b>${esc(S.farm.name)}</b>에 <b>${ROLE[role]}</b> 권한으로 초대하는 링크입니다. 카카오톡이나 문자로 보내 주세요.</p>
+    <div class="linkbox"><input id="inv-link" readonly value="${esc(link)}"><button type="button" class="btn small primary" id="inv-copy">복사</button></div>
+    <p class="hint">7일 동안 한 번만 쓸 수 있습니다. 구글 로그인이 ‘테스트’ 상태라면 받는 분의 구글 계정을 Google Cloud 콘솔의 테스트 사용자에 먼저 추가해 주세요.</p>
+    <div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">닫기</button></div></div>`, {label:'초대 링크'});
+  sh.querySelector('#inv-copy').addEventListener('click', () => copyText(sh.querySelector('#inv-link')));
+}
+async function copyText(input) {
+  try { await navigator.clipboard.writeText(input.value); toast('링크를 복사했습니다'); }
+  catch { input.focus(); input.select(); toast('링크를 선택했습니다. 길게 눌러 복사하세요.'); }
 }
 
 /* ---------- labels ---------- */
@@ -660,15 +970,15 @@ function showErr(sh, msg) { const e = sh.querySelector('.err'); e.textContent = 
 const fval = (sh, id) => ((sh.querySelector('#' + id) || {}).value || '').trim();
 
 /* ---------- gecko form ---------- */
-async function compress(file) {
+async function compress(file, max = 1400, type = 'image/jpeg') {
   try {
     let src;
     try { src = await createImageBitmap(file, {imageOrientation:'from-image'}); }
     catch { src = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(file); }); }
-    const k = Math.min(1, 1400 / Math.max(src.width, src.height));
+    const k = Math.min(1, max / Math.max(src.width, src.height));
     const c = document.createElement('canvas'); c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
     c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
-    const b = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.86));
+    const b = await new Promise(r => c.toBlob(r, type, 0.86));
     if (b) return b;
   } catch {}
   return file;
@@ -692,16 +1002,32 @@ function openGeckoForm(id, pre = {}) {
     <div class="field"><label for="f-morph">모프</label><input id="f-morph" list="morph-list" value="${esc(v.morph || '')}" autocomplete="off" placeholder="예: 할리퀸 핀스트라이프"><datalist id="morph-list">${MORPHS.map(m => `<option value="${m}"></option>`).join('')}</datalist></div>
     <div class="grid2"><div class="field"><label for="f-sex">성별</label><select id="f-sex">${Object.entries(SEX).map(([k, s]) => `<option value="${k}"${(v.sex || 'u') === k ? ' selected' : ''}>${s.t}</option>`).join('')}</select></div>
       <div class="field"><label for="f-sexat">성별 확인일</label><input id="f-sexat" type="date" value="${esc(v.sexAt || '')}"></div></div>
-    <div class="grid2"><div class="field"><label for="f-hatch">해칭일</label><input id="f-hatch" type="date" value="${esc(v.hatchDate || '')}"></div>
-      <div class="field"><label for="f-acq">입양일</label><input id="f-acq" type="date" value="${esc(v.acquiredDate || '')}"></div></div>
-    <div class="grid2"><div class="field"><label for="f-src">출처</label><select id="f-src">${Object.entries(SRC).map(([k, t]) => `<option value="${k}"${(v.source || 'buy') === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
-      <div class="field"><label for="f-srcn">입양처 · 비고</label><input id="f-srcn" value="${esc(v.sourceNote || '')}" autocomplete="off"></div></div>
+    <div class="grid2"><div class="field"><label for="f-hmode">해칭일</label><select id="f-hmode">${Object.entries(HATCHM).map(([k, t]) => `<option value="${k}"${hatchMode(v) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="field" id="f-hatch-f"${hatchMode(v) === 'unknown' ? ' hidden' : ''}><label for="f-hatch">${hatchMode(v) === 'approx' ? '대략적인 날짜' : '날짜'}</label><input id="f-hatch" type="date" value="${esc(v.hatchDate || '')}"></div>
+      <p class="hint" id="f-hatch-u"${hatchMode(v) === 'unknown' ? '' : ' hidden'}>택 분실 등으로 해칭일을 모를 때 고릅니다. 나이는 표시되지 않습니다.</p></div>
+    <div class="grid2"><div class="field"><label for="f-acq">입양일</label><input id="f-acq" type="date" value="${esc(v.acquiredDate || '')}"></div>
+      <div class="field"><label for="f-src">출처</label><select id="f-src">${Object.entries(SRC).map(([k, t]) => `<option value="${k}"${(v.source || 'buy') === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
+    <div class="field"><label for="f-srcn">입양처 · 비고</label><input id="f-srcn" value="${esc(v.sourceNote || '')}" autocomplete="off"></div>
     <fieldset class="fs"><legend>혈통 (부모)</legend>${parentField('sire')}${parentField('dam')}<p class="hint">목록에 있는 개체를 고르면 조부모까지 혈통도가 이어집니다.</p></fieldset>
     ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS).map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label for="f-notes">메모</label><textarea id="f-notes" rows="3">${esc(v.notes || '')}</textarea></div>
+    <fieldset class="fs"><legend>QR 공개 카드</legend>
+      <label class="check"><input type="checkbox" id="f-pubon"${v.publicOn === false ? '' : ' checked'}><span>QR 공개 카드 사용<small>끄면 로그인한 농장 구성원만 볼 수 있습니다.</small></span></label>
+      <p class="hint">항상 공개: 사진, 개체번호, 이름, 모프, 성별</p>
+      <label class="check"><input type="checkbox" id="f-pubdef"${v.publicFields ? '' : ' checked'}><span>농장 기본 설정 따르기<small>설정 화면의 공개 카드 기본값을 그대로 씁니다.</small></span></label>
+      <div class="pubgrid" id="f-pubf"${v.publicFields ? '' : ' hidden'}>${PUBF.map(([k, t]) => `<label class="check"><input type="checkbox" name="pf" value="${k}"${pubVis(v)[k] ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <p class="hint">분양받은 분의 연락처는 어떤 설정으로도 공개되지 않습니다.</p>
+    </fieldset>
     <p class="err" hidden></p>
     <div class="sh-foot">${g ? '<button type="button" class="btn danger" id="f-del">삭제</button>' : ''}<span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="f-save">저장</button></div></form>`, {label:g ? '개체 정보 수정' : '개체 등록'});
   sh.querySelectorAll('select[data-ext]').forEach(s => s.addEventListener('change', () => { const x = sh.querySelector('#' + s.dataset.ext); x.hidden = s.value !== 'ext'; if (!x.hidden) x.focus(); }));
+  const hm = sh.querySelector('#f-hmode');
+  hm.addEventListener('change', () => {
+    sh.querySelector('#f-hatch-f').hidden = hm.value === 'unknown'; sh.querySelector('#f-hatch-u').hidden = hm.value !== 'unknown';
+    sh.querySelector('label[for=f-hatch]').textContent = hm.value === 'approx' ? '대략적인 날짜' : '날짜';
+  });
+  const pd = sh.querySelector('#f-pubdef');
+  pd.addEventListener('change', () => { sh.querySelector('#f-pubf').hidden = pd.checked; });
   const fp = sh.querySelector('#f-photo');
   if (fp) fp.addEventListener('change', async () => {
     const file = fp.files && fp.files[0]; if (!file) return;
@@ -726,11 +1052,14 @@ function openGeckoForm(id, pre = {}) {
     const sp = fval(sh, 'f-sire'), dp = fval(sh, 'f-dam');
     const row = {
       code:fval(sh, 'f-code'), name:fval(sh, 'f-name'), morph:fval(sh, 'f-morph'), sex:fval(sh, 'f-sex') || 'u', sex_at:fval(sh, 'f-sexat') || null,
-      hatch_date:fval(sh, 'f-hatch') || null, acquired_date:fval(sh, 'f-acq') || null, source:fval(sh, 'f-src'), source_note:fval(sh, 'f-srcn'),
+      hatch_mode:fval(sh, 'f-hmode') || 'exact', hatch_date:fval(sh, 'f-hmode') === 'unknown' ? null : (fval(sh, 'f-hatch') || null), acquired_date:fval(sh, 'f-acq') || null, source:fval(sh, 'f-src'), source_note:fval(sh, 'f-srcn'),
       sire_id:sp.startsWith('id:') ? sp.slice(3) : null, sire_ext:sp === 'ext' ? fval(sh, 'f-sire-ext') : '',
       dam_id:dp.startsWith('id:') ? dp.slice(3) : null, dam_ext:dp === 'ext' ? fval(sh, 'f-dam-ext') : '',
-      notes:sh.querySelector('#f-notes').value.trim(), photo_path:photo || null, updated_at:new Date().toISOString()
+      notes:sh.querySelector('#f-notes').value.trim(), photo_path:photo || null, updated_at:new Date().toISOString(),
+      public_on:sh.querySelector('#f-pubon').checked,
+      public_fields:pd.checked ? null : Object.fromEntries(PUBF.map(([k]) => [k, !!sh.querySelector(`input[name=pf][value=${k}]`).checked]))
     };
+    if (row.hatch_mode === 'approx' && !row.hatch_date) return showErr(sh, '대략적인 해칭일을 골라 주세요. 모르면 ‘알 수 없음’을 고르세요.');
     if (!row.code && !row.name) return showErr(sh, '개체번호나 이름 중 하나는 입력해 주세요.');
     if (row.code) { const dup = [...S.geckos.values()].find(x => x.id !== id && (x.code || '').toLowerCase() === row.code.toLowerCase()); if (dup) return showErr(sh, `개체번호 ${row.code}는 이미 ${gTitle(dup)}에게 쓰이고 있습니다.`); }
     if (row.sire_id && row.sire_id === row.dam_id) return showErr(sh, '부와 모가 같은 개체입니다.');
@@ -742,7 +1071,7 @@ function openGeckoForm(id, pre = {}) {
         if (g.photo && g.photo !== photo) sb.storage.from('photos').remove([g.photo]).catch(() => {});
         closeSheet(); toast('저장했습니다'); await refresh();
       } else {
-        await q(sb.from('geckos').insert({id:gid, ...row, status:'active'}));
+        await q(sb.from('geckos').insert({id:gid, farm_id:S.farm.id, ...row, status:'active'}));
         if (pre.fromClutch) await linkHatch(pre.fromClutch, gid, row.hatch_date);
         closeSheet(); toast('개체를 등록했습니다'); await refresh(); go('g-' + gid);
       }
@@ -871,7 +1200,7 @@ function openPairForm(id, pre = {}) {
     const row = {male_id:m.slice(3), female_id:f.slice(3), start_at:s, end_at:e || null, note:sh.querySelector('#p-n').value.trim(), updated_at:new Date().toISOString()};
     const btn = sh.querySelector('#p-save'); busy(btn, true);
     try {
-      if (id) await q(sb.from('pairings').update(row).eq('id', id)); else await q(sb.from('pairings').insert({id:rid(), ...row}));
+      if (id) await q(sb.from('pairings').update(row).eq('id', id)); else await q(sb.from('pairings').insert({id:rid(), farm_id:S.farm.id, ...row}));
       closeSheet(); toast('메이팅 기록을 저장했습니다'); await refresh();
     } catch (err) { busy(btn, false); showErr(sh, errMsg(err)); }
   });
@@ -942,7 +1271,7 @@ function openClutchForm(id, pre = {}) {
     const btn = sh.querySelector('#c-save'); busy(btn, true);
     try {
       const cid = id || rid();
-      if (id) await q(sb.from('clutches').update(row).eq('id', id)); else await q(sb.from('clutches').insert({id:cid, ...row}));
+      if (id) await q(sb.from('clutches').update(row).eq('id', id)); else await q(sb.from('clutches').insert({id:cid, farm_id:S.farm.id, ...row}));
       closeSheet(); toast('산란 기록을 저장했습니다'); await refresh();
       if (afterHatch) openGeckoForm(null, {sireId:row.sire_id, sireExt:row.sire_ext, damId:row.dam_id, hatchDate:row.hatch_at, source:'self', fromClutch:cid});
     } catch (err) { afterHatch = false; busy(btn, false); showErr(sh, errMsg(err)); }
@@ -979,7 +1308,7 @@ function drawLabel(ctx, x, y, w, h, g, url, guide) {
   ctx.fillStyle = '#333333'; ctx.font = `400 ${Math.round(h * 0.095)}px "IBM Plex Sans KR", sans-serif`;
   ctx.fillText(fitText(ctx, g.morph || '모프 미기록', tw), tx, ty); ty += h * 0.13;
   ctx.fillText(fitText(ctx, sx.t, tw), tx, ty); ty += h * 0.13;
-  if (g.hatchDate) ctx.fillText(fitText(ctx, `해칭 ${g.hatchDate.replace(/-/g, '.')}`, tw), tx, ty);
+  if (hatchLabel(g)) ctx.fillText(fitText(ctx, hatchLabel(g), tw), tx, ty);
   ctx.restore();
 }
 const safeName = s => String(s || 'gecko').replace(/[^\w가-힣-]+/g, '_');
@@ -1026,12 +1355,13 @@ async function clearSamples() {
   try {
     const ids = [...S.geckos.values()].filter(g => g.sample).map(g => g.id);
     if (ids.length) {
-      await q(sb.from('geckos').update({sire_id:null}).eq('sample', false).in('sire_id', ids));
-      await q(sb.from('geckos').update({dam_id:null}).eq('sample', false).in('dam_id', ids));
-      await q(sb.from('geckos').delete().eq('sample', true));
+      const fid = S.farm.id;
+      await q(sb.from('geckos').update({sire_id:null}).eq('farm_id', fid).eq('sample', false).in('sire_id', ids));
+      await q(sb.from('geckos').update({dam_id:null}).eq('farm_id', fid).eq('sample', false).in('dam_id', ids));
+      await q(sb.from('geckos').delete().eq('farm_id', fid).eq('sample', true));
     }
-    await q(sb.from('clutches').delete().eq('sample', true));
-    await q(sb.from('pairings').delete().eq('sample', true));
+    await q(sb.from('clutches').delete().eq('farm_id', S.farm.id).eq('sample', true));
+    await q(sb.from('pairings').delete().eq('farm_id', S.farm.id).eq('sample', true));
     toast('예시를 지웠습니다'); await refresh(); go('list');
   } catch (e) { toast(errMsg(e), 'bad'); }
 }
@@ -1104,7 +1434,7 @@ function mmTree(id) {
   const keyOf = g => MM.group === 'sex' ? ({m:'수컷', f:'암컷', u:'미확인'})[sexGroup(g.sex)]
     : MM.group === 'morph' ? (g.morph || '모프 미기록')
     : MM.group === 'status' ? STATUS[gStatus(g)]
-    : (g.hatchDate ? g.hatchDate.slice(0, 4) + '년 해칭' : '해칭일 미기록');
+    : (hatchMode(g) === 'unknown' ? '해칭일 모름' : g.hatchDate ? g.hatchDate.slice(0, 4) + '년 해칭' : '해칭일 미기록');
   const m = new Map();
   list.forEach(g => { const k = keyOf(g); if (!m.has(k)) m.set(k, []); m.get(k).push(g); });
   let groups = [...m.entries()];
@@ -1147,17 +1477,18 @@ function mmNode(n, idx) {
   } else if (n.kind === 'group') {
     s = `<rect class="mn-box" width="${w}" height="${h}" rx="11"/><text class="mn-gt" x="14" y="${h / 2 + 5}">${esc(clip(n.label, `600 14px ${BODY_FONT}`, w - 74))}</text><text class="mn-gs" x="${w - 14}" y="${h / 2 + 4}" text-anchor="end">${esc(n.sub)}</text>`;
   } else if (n.kind === 'gecko') {
-    const g = n.g, sx = SEX[g.sex || 'u'], u = photoUrl(g), cy = h / 2;
+    const g = n.g, sx = SEX[g.sex || 'u'], u = photoUrl(g), fb = u ? '' : fallbackFor(g), cy = h / 2;
     const roleW = n.role ? Math.min(78, clip(n.role, `600 11px ${BODY_FONT}`, 78).length * 8 + 6) : 0;
     s = `<rect class="mn-box" width="${w}" height="${h}" rx="12"/>
       <circle class="mn-av" cx="27" cy="${cy}" r="18"/>`;
     if (u) s += `<clipPath id="mmc${idx}"><circle cx="27" cy="${cy}" r="18"/></clipPath><image href="${esc(u)}" x="9" y="${cy - 18}" width="36" height="36" preserveAspectRatio="xMidYMid slice" clip-path="url(#mmc${idx})"/>`;
+    else if (fb) s += `<clipPath id="mmc${idx}"><circle cx="27" cy="${cy}" r="18"/></clipPath><image href="${esc(fb)}" x="13" y="${cy - 14}" width="28" height="28" preserveAspectRatio="xMidYMid meet" clip-path="url(#mmc${idx})" opacity=".85"/>`;
     else s += `<text class="mn-ini" x="27" y="${cy + 3.5}" text-anchor="middle">${esc((g.code || g.name || '?').slice(-3))}</text>`;
     s += `<circle class="mn-ring r-${sx.c}" cx="27" cy="${cy}" r="18"/>
       <text class="mn-c" x="54" y="${cy - 9}">${esc(clip(g.code || '번호 없음', `500 11px "IBM Plex Mono", monospace`, w - 70 - roleW))}<tspan class="${SEXFILL[sx.c]}" dx="5">${sx.s}</tspan></text>
       ${n.role ? `<text class="mn-r" x="${w - 10}" y="${cy - 9}" text-anchor="end">${esc(clip(n.role, `600 11px ${BODY_FONT}`, 78))}</text>` : ''}
       <text class="mn-n" x="54" y="${cy + 7}">${esc(clip(gTitle(g), `600 13px ${BODY_FONT}`, w - 64))}</text>
-      <text class="mn-m" x="54" y="${cy + 21}">${esc(clip([g.name ? (g.morph || '모프 미기록') : null, g.hatchDate ? ageText(g.hatchDate) : null, gStatus(g) !== 'active' ? STATUS[gStatus(g)] : null].filter(Boolean).join(' · ') || '정보 없음', `400 11px ${BODY_FONT}`, w - 64))}</text>`;
+      <text class="mn-m" x="54" y="${cy + 21}">${esc(clip([g.name ? (g.morph || '모프 미기록') : null, hatchAge(g) || null, gStatus(g) !== 'active' ? STATUS[gStatus(g)] : null].filter(Boolean).join(' · ') || '정보 없음', `400 11px ${BODY_FONT}`, w - 64))}</text>`;
   } else {
     s = `<rect class="mn-box" width="${w}" height="${h}" rx="10"/><text class="mn-r" x="12" y="${h / 2 - 4}">${esc(n.role || '')}</text><text class="mn-n" x="12" y="${h / 2 + 12}">${esc(clip(n.label, `600 13px ${BODY_FONT}`, w - 24))}</text>`;
   }
@@ -1267,7 +1598,7 @@ function mmCard() {
   const close = '<button type="button" class="icon-btn" data-mmclose>닫기</button>';
   if (n.kind === 'gecko') {
     const g = n.g, sx = SEX[g.sex || 'u'], w = g.last && g.last.weight, isCenter = route().id === g.id;
-    const sub = [g.name ? (g.morph || '모프 미기록') : null, g.hatchDate ? ageText(g.hatchDate) : null, w ? `${fmtG(w.g)} g` : null].filter(Boolean).join(' · ');
+    const sub = [g.name ? (g.morph || '모프 미기록') : null, hatchAge(g) || null, w ? `${fmtG(w.g)} g` : null].filter(Boolean).join(' · ');
     card.innerHTML = `<div class="mc-in">${photoTag(g)}<div class="gc-body"><span class="gc-top"><span class="code">${esc(g.code || '번호 없음')}</span><span class="sex ${sx.c}">${sx.s} ${sx.t}</span>${gStatus(g) !== 'active' ? `<span class="pill">${STATUS[gStatus(g)]}</span>` : ''}</span><span class="nm">${esc(gTitle(g))}</span>${sub ? `<span class="mf">${esc(sub)}</span>` : ''}${n.more ? `<span class="hint">자손 ${n.more}마리가 더 있습니다. 이 개체를 가운데로 놓으면 보입니다.</span>` : ''}</div>${close}</div>
       <div class="mc-acts">${isCenter ? '' : `<a class="btn small" href="#map-${g.id}">이 개체를 가운데로</a>`}<a class="btn small primary" href="#g-${g.id}">개체 화면 열기</a></div>`;
   } else {
@@ -1283,6 +1614,30 @@ function visibleIds() {
 }
 const ACT = {
   'close-sheet': () => closeSheet(),
+  'pub-retry': t => { S.pub.delete(pubKey(t.dataset.id, !!t.dataset.preview)); render(); },
+  'switch-farm': t => switchFarm(t.dataset.farm, t.dataset.go),
+  'accept-invite': async t => {
+    busy(t, true, '참여하는 중…');
+    try { const fid = await q(sb.rpc('accept_invite', {c:t.dataset.code})); S.join.delete(t.dataset.code); lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('list'); toast('농장에 참여했습니다'); }
+    catch (e) { busy(t, false); toast(errMsg(e), 'bad'); }
+  },
+  'new-farm': async () => {
+    const sh = openSheet(`<form class="form" id="nf" novalidate>${sheetHead('새 농장 만들기')}<div class="field"><label for="nf-name">농장 이름</label><input id="nf-name" autocomplete="off" placeholder="예: OO 크레스티드"></div><p class="hint">새 농장은 빈 상태로 시작하며, 설정에서 농장을 오가며 볼 수 있습니다.</p><p class="err" hidden></p><div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button class="btn primary" id="nf-save">만들기</button></div></form>`, {label:'새 농장'});
+    sh.querySelector('#nf').addEventListener('submit', async ev => { ev.preventDefault(); const b = sh.querySelector('#nf-save'); busy(b, true, '만드는 중…'); try { closeSheet(); await createFarm(fval(sh, 'nf-name')); } catch (e) { busy(b, false); toast(errMsg(e), 'bad'); } });
+  },
+  'make-invite': () => makeInvite(),
+  'copy-invite': t => { const i = document.createElement('input'); i.value = inviteLink(t.dataset.code); i.className = 'vh'; document.body.appendChild(i); copyText(i).finally(() => setTimeout(() => i.remove(), 500)); },
+  'revoke-invite': async t => { try { await q(sb.from('farm_invites').delete().eq('code', t.dataset.code)); toast('초대 링크를 취소했습니다'); S.setupDirty = false; await refresh(); } catch (e) { toast(errMsg(e), 'bad'); } },
+  'remove-member': async t => {
+    const m = S.members.find(x => x.user_id === t.dataset.uid); if (!m) return;
+    if (!await confirmSheet('구성원을 내보낼까요?', `<b>${esc(m.display_name || m.email || '')}</b>님은 이 농장의 개체를 더 이상 볼 수 없습니다. 그동안 남긴 기록은 그대로 남습니다.`, '내보내기', true)) return;
+    try { await q(sb.from('farm_members').delete().eq('farm_id', S.farm.id).eq('user_id', m.user_id)); toast('내보냈습니다'); S.setupDirty = false; await refresh(); } catch (e) { toast(errMsg(e), 'bad'); }
+  },
+  'leave-farm': async () => {
+    if (!await confirmSheet('이 농장에서 나갈까요?', `<b>${esc(S.farm.name)}</b>의 개체를 더 이상 볼 수 없게 됩니다. 다시 들어오려면 관리자에게 새 초대 링크를 받아야 합니다.`, '나가기', true)) return;
+    try { await q(sb.from('farm_members').delete().eq('farm_id', S.farm.id).eq('user_id', S.user.id)); lsDel('gk.farm'); resetFarmView(); await loadAll(); go('list'); toast('농장에서 나갔습니다'); }
+    catch (e) { toast(errMsg(e), 'bad'); }
+  },
   'login': () => login(),
   'logout': async () => { if (!await confirmSheet('로그아웃할까요?', '이 기기에서만 로그아웃합니다. 데이터는 그대로 남습니다.', '로그아웃')) return; await sb.auth.signOut(); location.hash = 'list'; },
   'retry': () => { S.conn = 'ok'; S.loaded = {g:false, c:false, p:false}; render(); refresh(); },
@@ -1318,6 +1673,8 @@ const ACT = {
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-act]'); if (!t) return;
   const fn = ACT[t.dataset.act]; if (!fn) return;
+  const need = NEED[t.dataset.act];
+  if (need && !can(need)) { e.preventDefault(); toast(need === 'admin' ? '관리자만 할 수 있는 작업입니다.' : '기록 담당 이상만 기록할 수 있습니다.', 'bad'); return; }
   if (t.tagName !== 'A') e.preventDefault();
   fn(t, e);
 });
@@ -1327,6 +1684,12 @@ document.addEventListener('change', e => {
   if (k === 'sort') { S.sort = t.value; lsSet('gk.sort', t.value); render(); }
   if (k === 'lab') { if (t.checked) S.labSel.add(t.dataset.id); else S.labSel.delete(t.dataset.id); render(); }
   if (k === 'mm-center') go('map-' + t.value);
+  if (k === 'farm-switch') switchFarm(t.value);
+  if (k === 'member-role') {
+    q(sb.from('farm_members').update({role:t.value}).eq('farm_id', S.farm.id).eq('user_id', t.dataset.uid))
+      .then(() => { toast('권한을 바꿨습니다'); return refresh(); })
+      .catch(err => { toast(errMsg(err), 'bad'); S.setupDirty = false; refresh(); });
+  }
   if (k === 'mm-up' || k === 'mm-down' || k === 'mm-group' || k === 'mm-scope') {
     const f = k.slice(3); MM[f] = (f === 'up' || f === 'down') ? +t.value : t.value; lsSet('gk.mm.' + f, t.value);
     MM.viewKey = ''; MM.collapsed.clear(); render();
@@ -1342,7 +1705,7 @@ $('#q').addEventListener('keydown', e => {
 });
 function onRoute() {
   const r = route();
-  if (r.v === 'gecko' && S.auth === 'in' && S.logGid !== r.id) { S.logs = []; S.logsLoaded = false; S.tl = 'all'; S.tlMore = false; loadLogs(r.id); }
+  if (r.v === 'gecko' && S.auth === 'in' && G(r.id) && S.logGid !== r.id) { S.logs = []; S.logsLoaded = false; S.tl = 'all'; S.tlMore = false; loadLogs(r.id); }
   if (r.v === 'labels' && !S.labInit && S.loaded.g) { S.labInit = true; activeGeckos().forEach(g => S.labSel.add(g.id)); }
   if (r.v !== 'map') MM.sel = null;
 }
@@ -1364,8 +1727,8 @@ let lastUid = null, lastLoad = 0;
 function onSession(session) {
   const u = (session && session.user) || null;
   if (S.auth !== 'loading' && (u ? u.id : null) === lastUid) return;
-  lastUid = u ? u.id : null; S.user = u;
-  if (!u) { S.auth = 'out'; S.loaded = {g:false, c:false, p:false}; S.geckos = new Map(); S.logGid = null; render(); return; }
+  lastUid = u ? u.id : null; S.user = u; S.pub.clear(); S.join.clear();
+  if (!u) { S.auth = 'out'; S.loaded = {g:false, c:false, p:false}; S.geckos = new Map(); S.logGid = null; S.farm = null; S.role = null; S.farms = []; render(); return; }
   S.auth = 'in';
   const after = lsGet('gk.after');
   if (after !== null) { try { localStorage.removeItem('gk.after'); } catch {} }
