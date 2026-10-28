@@ -407,3 +407,11 @@ code{font-family:var(--f-mono);font-size:.92em;background:var(--sunken);padding:
 .sale-li{display:flex;align-items:center;gap:6px}
 .sale-li .rowbtn{flex:1;min-width:0}
 .to-ref{flex:none;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 10px}
+
+/* inbreeding check */
+.kin{padding:12px 14px;border-radius:12px;font-size:14px;display:flex;flex-direction:column;gap:6px}
+.kin.ok{background:var(--accent-soft);color:var(--ink)}
+.kin.warn{background:var(--bad-soft);color:var(--ink);border:1px solid var(--bad)}
+.kin.warn b{color:var(--bad)}
+.kin ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:2px}
+.kin-note{margin-top:6px}

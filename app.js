@@ -6,8 +6,8 @@ const SEX = {
   u:{t:'미확인', s:'?', c:'unk'}, pm:{t:'수컷 추정', s:'♂?', c:'male'}, pf:{t:'암컷 추정', s:'♀?', c:'female'},
   m:{t:'수컷', s:'♂', c:'male'}, f:{t:'암컷', s:'♀', c:'female'}
 };
-const STATUS = { active:'보유 중', sold:'분양 완료', dead:'사망', ref:'혈통용' };
-const STATUS_OPT = { active:'보유 중', sold:'분양 완료', dead:'사망', ref:'혈통용 (내 개체 아님 · 혈통도에만 사용)' };
+const STATUS = { active:'보유 중', sold:'분양 완료', dead:'사망', ref:'혈관리용' };
+const STATUS_OPT = { active:'보유 중', sold:'분양 완료', dead:'사망', ref:'혈관리용 (내 개체 아님 · 혈통 관리에만 사용)' };
 const ROLE_RO = { admin:'관리자로', keeper:'기록 담당으로', viewer:'보기 전용으로' };
 const APP_NAME = '게코 관리노트';
 const UA = navigator.userAgent || '';
@@ -508,7 +508,7 @@ function vList() {
   const all = [...S.geckos.values()];
   const cnt = {active:0, sold:0, dead:0, ref:0};
   all.forEach(g => { cnt[gStatus(g)] = (cnt[gStatus(g)] || 0) + 1; });
-  let arr = all.filter(g => S.listFilter === 'all' || gStatus(g) === S.listFilter);
+  let arr = all.filter(g => S.listFilter === 'all' ? gStatus(g) !== 'ref' : gStatus(g) === S.listFilter);
   if (S.sexFilter !== 'all') arr = arr.filter(g => sexGroup(g.sex) === S.sexFilter);
   if (S.q) arr = arr.filter(matchQ);
   arr.sort(sorter(S.sort));
@@ -520,9 +520,9 @@ function vList() {
       <div class="chips">${over.map(g => { const f = feedInfo(g); return `<a class="chip" href="#g-${g.id}"><span>${esc(gLabel(g))}</span><span class="d">${f.days == null ? '기록 없음' : 'D+' + f.days}</span></a>`; }).join('')}</div>
       <p class="hint">마지막 급여 후 ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일 이상 지난 개체입니다. 기준은 설정에서 바꿀 수 있습니다.</p></section>`;
   }
-  const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['ref', '혈통용'], ['all', '전체']].filter(([v]) => (v !== 'dead' || cnt.dead) && (v !== 'ref' || cnt.ref));
+  const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['ref', '혈관리용'], ['all', '전체']].filter(([v]) => (v !== 'dead' || cnt.dead) && (v !== 'ref' || cnt.ref));
   h += `<div class="toolbar">
-    <div class="seg">${segs.map(([v, t]) => `<button data-act="filter" data-v="${v}" aria-pressed="${S.listFilter === v}">${t}<span class="n">${v === 'all' ? all.length : (cnt[v] || 0)}</span></button>`).join('')}</div>
+    <div class="seg">${segs.map(([v, t]) => `<button data-act="filter" data-v="${v}" aria-pressed="${S.listFilter === v}">${t}<span class="n">${v === 'all' ? all.length - cnt.ref : (cnt[v] || 0)}</span></button>`).join('')}</div>
     <div class="tb-right">
       <select id="sexf" data-chg="sexf" aria-label="성별로 보기">${[['all', '모든 성별'], ['m', '수컷·추정'], ['f', '암컷·추정'], ['u', '미확인']].map(([v, t]) => `<option value="${v}"${S.sexFilter === v ? ' selected' : ''}>${t}</option>`).join('')}</select>
       <select id="sortf" data-chg="sort" aria-label="정렬">${[['code', '번호순'], ['feed', '급여 오래된 순'], ['young', '어린 개체 순'], ['name', '이름순'], ['recent', '최근 등록순']].map(([v, t]) => `<option value="${v}"${S.sort === v ? ' selected' : ''}>${t}</option>`).join('')}</select>
@@ -594,7 +594,7 @@ function vGecko(id) {
       </div>
     </div>
   </section>
-  ${st === 'ref' ? `<div class="notice"><p><b>혈통용 개체입니다.</b> 내 보유 개체가 아니라 혈통도를 잇기 위해 등록한 개체라서 보유 목록·급여 알림·분양 목록에는 나오지 않습니다.</p></div>` : ''}
+  ${st === 'ref' ? `<div class="notice"><p><b>혈관리용 개체입니다.</b> 내 보유 개체가 아니라 혈통도를 잇기 위해 등록한 개체라서 보유 목록·급여 알림·분양 목록에는 나오지 않습니다.</p></div>` : ''}
   <section class="qlog" aria-label="빠른 기록"${st === 'ref' ? ' hidden' : ''}>${Object.keys(LOGT).map(t => `<button class="qbtn" data-act="log" data-t="${t}" data-id="${id}"><span class="qi">${QICON[t]}</span>${LOGT[t]}</button>`).join('')}</section>
   <section class="stats" aria-label="최근 상태"${st === 'ref' ? ' hidden' : ''}>
     ${stat('최근 무게', L.weight ? `${fmtG(L.weight.g)} g` : '—', L.weight ? fmtD(L.weight.d) : '기록 없음')}
@@ -684,12 +684,63 @@ function clutchRow(c) {
     <span class="r2">알 ${+c.eggs || 0}개 · 유정란 ${fertile} · 무정란 ${+c.infertile || 0}${(c.hatchedIds || []).length ? ` · 해칭 개체 ${(c.hatchedIds || []).length}마리 등록` : ''}${c.expectAt && st === 'incubating' ? ` · 예상 해칭 ${fmtShort(c.expectAt)}` : ''}</span>
     <span class="rr"><span class="pill ${pillCls}">${CLS[st]}</span>${extra ? `<span class="hint mono">${extra}</span>` : ''}</span></button></li>`;
 }
+/* ---------- inbreeding check (5촌 이내, 입력된 혈통만) ---------- */
+const KIN_MAX = 5;
+function ancestorsWithin(id, max) {
+  const out = new Map(), queue = [[id, 0]];
+  while (queue.length) {
+    const [x, d] = queue.shift();
+    if (out.has(x) && out.get(x) <= d) continue;
+    out.set(x, d);
+    if (d >= max) continue;
+    const g = G(x); if (!g) continue;
+    if (g.sireId) queue.push([g.sireId, d + 1]);
+    if (g.damId) queue.push([g.damId, d + 1]);
+  }
+  return out;
+}
+function kinship(aId, bId, max = KIN_MAX) {
+  if (!aId || !bId || aId === bId) return [];
+  const A = ancestorsWithin(aId, max), B = ancestorsWithin(bId, max), res = [];
+  for (const [x, da] of A) {
+    if (!B.has(x)) continue;
+    const db = B.get(x), total = da + db;
+    if (total > 0 && total <= max) res.push({id:x, da, db, total});
+  }
+  return res.sort((p, q) => p.total - q.total || p.da - q.da);
+}
+function kinLabel(list) {
+  const c = list[0]; if (!c) return '';
+  const t = c.total;
+  if (c.da === 0 || c.db === 0) return t === 1 ? '부모와 자식 (1촌)' : t === 2 ? '조부모와 손주 (2촌)' : `${t}대 직계 (${t}촌)`;
+  if (t === 2) return list.filter(x => x.total === 2).length >= 2 ? '형제자매 (2촌)' : '한쪽 부모만 같은 형제자매 (2촌)';
+  if (t === 3) return '삼촌·조카 관계 (3촌)';
+  if (t === 4) return '사촌 (4촌)';
+  return '오촌 (5촌)';
+}
+const KIN_NOTE = '이 확인은 이 앱에 입력된 혈통 정보(지금 농장에 등록된 개체와 부모 연결)만으로 계산합니다. ‘이름만 적기’로 입력한 부모나 등록하지 않은 조상은 비교하지 못하므로, 경고가 없어도 혈연이 없다고 보장하지는 않습니다.';
+function kinBox(maleId, femaleId) {
+  if (!maleId || !femaleId) return `<p class="hint kin-note">수컷과 암컷을 고르면 입력된 혈통 안에서 5촌 이내 공통 조상이 있는지 확인합니다.</p>`;
+  const list = kinship(maleId, femaleId);
+  const note = `<p class="hint kin-note">${KIN_NOTE}</p>`;
+  if (!list.length) return `<div class="kin ok">입력된 혈통 기준으로 <b>5촌 이내 공통 조상이 없습니다.</b></div>${note}`;
+  const best = list[0].total;
+  const who = list.filter(x => x.total === best).map(x => {
+    const g = G(x.id), nm = g ? gLabel(g) : '알 수 없는 개체';
+    if (x.da === 0) return `${esc(nm)} — 수컷 본인이 암컷의 ${x.db}대 위 조상`;
+    if (x.db === 0) return `${esc(nm)} — 암컷 본인이 수컷의 ${x.da}대 위 조상`;
+    return `${esc(nm)} — 수컷 쪽 ${x.da}대 위 · 암컷 쪽 ${x.db}대 위`;
+  });
+  return `<div class="kin warn" role="alert"><b>인브리딩 위험: ${kinLabel(list)}</b>
+    <p>두 개체가 5촌 이내에서 혈통이 겹칩니다. ${list[0].da === 0 || list[0].db === 0 ? '한쪽이 다른 쪽의 직계 조상입니다:' : '가장 가까운 공통 조상:'}</p><ul>${who.map(w => `<li>${w}</li>`).join('')}</ul>
+    ${list.length > who.length ? `<p class="hint">더 먼 공통 조상도 ${list.length - who.length}마리 있습니다.</p>` : ''}</div>${note}`;
+}
 function pairRow(p) {
   const on = !p.endAt;
   return `<li><button class="rowbtn" data-act="edit-pair" data-id="${p.id}">
     <span class="r1">${esc(refName(p.maleId))} × ${esc(refName(p.femaleId))}</span>
     <span class="r2"><span class="mono">${fmtD(p.startAt)}</span> 합사${p.endAt ? ` · <span class="mono">${fmtD(p.endAt)}</span> 분리` : ''}${p.note ? ` · ${esc(p.note)}` : ''}</span>
-    <span class="rr"><span class="pill ${on ? 'good' : ''}">${on ? `합사 중 D+${daysSince(p.startAt)}` : '종료'}</span></span></button></li>`;
+    <span class="rr"><span class="pill ${on ? 'good' : ''}">${on ? `합사 중 D+${daysSince(p.startAt)}` : '종료'}</span>${(() => { const k = kinship(p.maleId, p.femaleId); return k.length ? `<span class="pill bad" title="입력된 혈통 기준">근친 주의 ${k[0].total}촌</span>` : ''; })()}</span></button></li>`;
 }
 
 /* timeline */
@@ -801,7 +852,7 @@ function vSales() {
   for (const [y, list] of years) {
     const sum = list.reduce((n, g) => n + (+(g.sale || {}).price || 0), 0);
     h += `<section class="panel"><div class="ph3"><h3>${/^\d{4}$/.test(y) ? y + '년' : y}</h3><span class="sumline"><span><b>${list.length}마리</b></span>${sum ? `<span>합계 <b>${fmtWon(sum)}</b></span>` : ''}</span></div>
-      <ul class="rows">${list.map(g => { const s = g.sale || {}, sx = SEX[g.sex || 'u']; return `<li class="sale-li"><a class="rowbtn" href="#g-${g.id}"><span class="r1"><span class="mono">${esc(g.code || '')}</span> ${esc(gTitle(g))} <span class="sex ${sx.c}">${sx.s}</span></span><span class="r2">${esc(g.morph || '모프 미기록')} · ${esc(s.to || '분양받은 분 미기록')}</span><span class="rr"><span class="mono hint">${fmtD(s.date)}</span>${s.price ? `<span class="pill">${fmtWon(s.price)}</span>` : ''}</span></a><button class="icon-btn to-ref" data-act="to-ref" data-id="${g.id}" title="실제로 분양한 개체가 아니라 혈통을 잇기 위해 등록한 개체라면 혈통용으로 옮기세요">혈통용으로</button></li>`; }).join('')}</ul></section>`;
+      <ul class="rows">${list.map(g => { const s = g.sale || {}, sx = SEX[g.sex || 'u']; return `<li class="sale-li"><a class="rowbtn" href="#g-${g.id}"><span class="r1"><span class="mono">${esc(g.code || '')}</span> ${esc(gTitle(g))} <span class="sex ${sx.c}">${sx.s}</span></span><span class="r2">${esc(g.morph || '모프 미기록')} · ${esc(s.to || '분양받은 분 미기록')}</span><span class="rr"><span class="mono hint">${fmtD(s.date)}</span>${s.price ? `<span class="pill">${fmtWon(s.price)}</span>` : ''}</span></a><button class="icon-btn to-ref" data-act="to-ref" data-id="${g.id}" title="실제로 분양한 개체가 아니라 혈통을 잇기 위해 등록한 개체라면 혈관리용으로 옮기세요">혈관리용으로</button></li>`; }).join('')}</ul></section>`;
   }
   return h;
 }
@@ -949,7 +1000,7 @@ async function copyText(input, msg = '링크를 복사했습니다') {
 /* ---------- labels ---------- */
 function vLabels() {
   if (!S.loaded.g) return loadingHTML();
-  const list = [...S.geckos.values()].filter(g => S.labAll || gStatus(g) === 'active').sort(byCode);
+  const list = [...S.geckos.values()].filter(g => S.labAll ? gStatus(g) !== 'ref' : gStatus(g) === 'active').sort(byCode);
   let h = `<a class="back" href="#list">← 개체 목록</a><div class="vhead"><div><h1 class="vtitle">QR 라벨</h1><p class="vsub">A4 한 장에 24칸(3×8) 라벨을 이미지로 만듭니다. 잘라서 사육장에 붙이고, 휴대폰 카메라로 찍으면 해당 개체 화면이 열립니다.</p></div></div>`;
   h += `<section class="panel"><div class="ph3"><h3>라벨에 넣을 개체</h3><div class="acts">
       <button class="btn small" data-act="lab-all">전체 선택</button><button class="btn small" data-act="lab-none">선택 해제</button>
@@ -1030,10 +1081,10 @@ function openGeckoForm(id, pre = {}) {
   let photo = v.photo || null, uploading = false;
   const parentField = w => {
     const cur = v[w + 'Id'] ? 'id:' + v[w + 'Id'] : v[w + 'Ext'] ? 'ext' : '', isS = w === 'sire';
-    return `<div class="field"><label for="f-${w}">${isS ? '부 (아빠)' : '모 (엄마)'}</label><select id="f-${w}" data-ext="f-${w}-ext" data-role="${w}"><option value="">미상</option>${geckoOptions(isS ? isMaleish : isFemaleish, v[w + 'Id'], id)}<option value="ext"${cur === 'ext' ? ' selected' : ''}>이름만 적기 (직접 입력)</option><option value="__new">+ 새 혈통용 개체 등록 (조부모까지 이을 때)</option></select>
+    return `<div class="field"><label for="f-${w}">${isS ? '부 (아빠)' : '모 (엄마)'}</label><select id="f-${w}" data-ext="f-${w}-ext" data-role="${w}"><option value="">미상</option>${geckoOptions(isS ? isMaleish : isFemaleish, v[w + 'Id'], id)}<option value="ext"${cur === 'ext' ? ' selected' : ''}>이름만 적기 (직접 입력)</option><option value="__new">+ 새 혈관리용 개체 등록 (조부모까지 이을 때)</option></select>
       <input id="f-${w}-ext" placeholder="${isS ? '예: OO파충류 수컷, 릴리화이트' : '예: OO파충류 암컷, 할리퀸'}" value="${esc(v[w + 'Ext'] || '')}" autocomplete="off"${cur === 'ext' ? '' : ' hidden'}></div>`;
   };
-  const sh = openSheet(`<form class="form" id="gform" novalidate>${sheetHead(g ? '개체 정보 수정' : isRef ? '혈통용 개체 등록' : '개체 등록')}
+  const sh = openSheet(`<form class="form" id="gform" novalidate>${sheetHead(g ? '개체 정보 수정' : isRef ? '혈관리용 개체 등록' : '개체 등록')}
     ${isRef && !g ? `<p class="who">내 개체가 아니라 혈통도를 잇기 위한 개체입니다(예: 부모의 부모). 보유 목록·급여 알림·분양 목록에는 나오지 않고, 혈통도와 마인드맵에만 쓰입니다. 이 개체의 부모도 이어서 지정할 수 있습니다.</p>` : ''}
     <div class="photo-pick"><div class="pp-prev" id="pp-prev">${photoUrl(v) ? `<img src="${esc(photoUrl(v))}" alt="">` : '<span>사진 없음</span>'}</div>
       <div class="pp-ctl"><label class="btn small" for="f-photo">${photo ? '사진 바꾸기' : '사진 선택'}</label><input id="f-photo" type="file" accept="image/*" hidden><p class="hint" id="pp-st">휴대폰에서는 바로 촬영할 수도 있습니다.</p></div></div>
@@ -1068,7 +1119,7 @@ function openGeckoForm(id, pre = {}) {
         s.value = s.dataset.prev;
         openGeckoForm(null, {status:'ref', sex:role === 'sire' ? 'm' : 'f', onCreated:nid => {
           const ng = G(nid); if (!ng) return;
-          const o = document.createElement('option'); o.value = 'id:' + nid; o.textContent = `${gLabel(ng)}${ng.morph ? ' · ' + ng.morph : ''} (혈통용)`;
+          const o = document.createElement('option'); o.value = 'id:' + nid; o.textContent = `${gLabel(ng)}${ng.morph ? ' · ' + ng.morph : ''} (혈관리용)`;
           s.insertBefore(o, s.querySelector('option[value=ext]')); s.value = o.value; s.dataset.prev = o.value;
           sh.querySelector('#' + s.dataset.ext).hidden = true;
         }});
@@ -1130,7 +1181,7 @@ function openGeckoForm(id, pre = {}) {
       } else {
         await q(sb.from('geckos').insert({id:gid, farm_id:S.farm.id, ...row, status:pre.status === 'ref' ? 'ref' : 'active'}));
         if (pre.fromClutch) await linkHatch(pre.fromClutch, gid, row.hatch_date);
-        if (pre.onCreated) { closeSheet(); toast('혈통용 개체를 등록했습니다'); await refresh(); pre.onCreated(gid); return; }
+        if (pre.onCreated) { closeSheet(); toast('혈관리용 개체를 등록했습니다'); await refresh(); pre.onCreated(gid); return; }
         closeSheet(); toast('개체를 등록했습니다'); await refresh(); go('g-' + gid);
       }
     } catch (e) { busy(btn, false); showErr(sh, errMsg(e)); }
@@ -1243,11 +1294,14 @@ function openPairForm(id, pre = {}) {
   const sh = openSheet(`<form class="form" id="pform" novalidate>${sheetHead(id ? '메이팅 수정' : '메이팅 기록')}
     <div class="grid2"><div class="field"><label for="p-m">수컷</label><select id="p-m"><option value="">선택하세요</option>${geckoOptions(isMaleish, p.maleId)}</select></div>
       <div class="field"><label for="p-f">암컷</label><select id="p-f"><option value="">선택하세요</option>${geckoOptions(isFemaleish, p.femaleId)}</select></div></div>
+    <div id="p-kin">${kinBox(p.maleId, p.femaleId)}</div>
     <div class="grid2"><div class="field"><label for="p-s">합사일</label><input id="p-s" type="date" value="${esc(p.startAt || '')}"></div>
       <div class="field"><label for="p-e">분리일</label><input id="p-e" type="date" value="${esc(p.endAt || '')}"><p class="hint">아직 합사 중이면 비워 두세요.</p></div></div>
     <div class="field"><label for="p-n">메모</label><textarea id="p-n" rows="2">${esc(p.note || '')}</textarea></div>
     <p class="err" hidden></p>
     <div class="sh-foot">${id ? '<button type="button" class="btn danger" id="p-del">삭제</button>' : ''}<span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="p-save">저장</button></div></form>`, {label:'메이팅 기록'});
+  const pk = () => { const m = fval(sh, 'p-m'), f = fval(sh, 'p-f'); sh.querySelector('#p-kin').innerHTML = kinBox(m.startsWith('id:') ? m.slice(3) : '', f.startsWith('id:') ? f.slice(3) : ''); };
+  sh.querySelector('#p-m').addEventListener('change', pk); sh.querySelector('#p-f').addEventListener('change', pk);
   sh.querySelector('#pform').addEventListener('submit', async ev => {
     ev.preventDefault();
     const m = fval(sh, 'p-m'), f = fval(sh, 'p-f'), s = fval(sh, 'p-s'), e = fval(sh, 'p-e');
@@ -1287,6 +1341,7 @@ function openClutchForm(id, pre = {}) {
     <div class="grid2"><div class="field"><label for="c-dam">암컷</label><select id="c-dam"><option value="">선택하세요</option>${geckoOptions(isFemaleish, c.damId)}</select></div>
       <div class="field"><label for="c-sire">수컷</label><select id="c-sire"><option value="">미상</option><option value="none"${sireCur === 'none' ? ' selected' : ''}>수컷 없음 (단독 산란)</option>${geckoOptions(isMaleish, c.sireId)}<option value="ext"${sireCur === 'ext' ? ' selected' : ''}>목록에 없는 개체 (직접 입력)</option></select>
         <input id="c-sire-ext" placeholder="수컷 이름" value="${esc(c.sireExt || '')}" autocomplete="off"${sireCur === 'ext' ? '' : ' hidden'}></div></div>
+    <div id="c-kin">${kinBox(c.sireId, c.damId)}</div>
     <div class="grid2"><div class="field"><label for="c-laid">산란일</label><input id="c-laid" type="date" value="${esc(c.laidAt || '')}"></div>
       <div class="field"><label for="c-status">상태</label><select id="c-status">${Object.entries(CLS).map(([k, t]) => `<option value="${k}"${st === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
     <div class="grid2"><div class="field"><label for="c-eggs">알 개수</label><input id="c-eggs" type="number" inputmode="numeric" min="1" max="20" value="${esc(c.eggs ?? 2)}"></div>
@@ -1303,6 +1358,9 @@ function openClutchForm(id, pre = {}) {
     <div class="sh-foot">${id ? '<button type="button" class="btn danger" id="c-del">삭제</button>' : ''}<span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="c-save">저장</button></div></form>`, {label:'산란 기록'});
   const fert = () => { const e = parseInt(fval(sh, 'c-eggs'), 10) || 0, i = parseInt(fval(sh, 'c-inf'), 10) || 0; sh.querySelector('#c-fert').textContent = i > e ? '무정란 수가 알 개수보다 많습니다.' : `유정란 ${e - i}개 · 무정란 ${i}개${e && e === i ? ' — 저장하면 상태가 ‘무정란’으로 정리됩니다.' : ''}`; };
   fert(); sh.querySelector('#c-eggs').addEventListener('input', fert); sh.querySelector('#c-inf').addEventListener('input', fert);
+  const ck = () => { const d = fval(sh, 'c-dam'), m = fval(sh, 'c-sire'); sh.querySelector('#c-kin').innerHTML = (m.startsWith('id:') && d.startsWith('id:')) ? kinBox(m.slice(3), d.slice(3)) : ''; };
+  sh.querySelector('#c-dam').addEventListener('change', ck); sh.querySelector('#c-sire').addEventListener('change', ck);
+  if (!(c.sireId && c.damId)) sh.querySelector('#c-kin').innerHTML = '';
   const ss = sh.querySelector('#c-sire'); ss.addEventListener('change', () => { const x = sh.querySelector('#c-sire-ext'); x.hidden = ss.value !== 'ext'; if (!x.hidden) x.focus(); });
   const cs = sh.querySelector('#c-status'); cs.addEventListener('change', () => { sh.querySelector('#c-hatch-f').hidden = cs.value !== 'hatched'; });
   let afterHatch = false;
@@ -1488,7 +1546,7 @@ function mmTree(id) {
     });
     return {mode:'lineage', root:{key:'root', kind:'gecko', g:c, center:true, role:'', children:[]}, left:anc(c, MM.up, 1, 'a', new Set([c.id])), right:des(c, MM.down, 'd', new Set([c.id]))};
   }
-  const list = [...S.geckos.values()].filter(g => MM.scope === 'all' || gStatus(g) === 'active').sort(byCode);
+  const list = [...S.geckos.values()].filter(g => gStatus(g) !== 'ref' && (MM.scope === 'all' || gStatus(g) === 'active')).sort(byCode);
   const keyOf = g => MM.group === 'sex' ? ({m:'수컷', f:'암컷', u:'미확인'})[sexGroup(g.sex)]
     : MM.group === 'morph' ? (g.morph || '모프 미기록')
     : MM.group === 'status' ? STATUS[gStatus(g)]
@@ -1668,15 +1726,15 @@ let mmRsz; window.addEventListener('resize', () => { clearTimeout(mmRsz); mmRsz 
 
 /* ---------- events ---------- */
 function visibleIds() {
-  return [...S.geckos.values()].filter(g => (S.listFilter === 'all' || gStatus(g) === S.listFilter) && (S.sexFilter === 'all' || sexGroup(g.sex) === S.sexFilter) && matchQ(g)).map(g => g.id);
+  return [...S.geckos.values()].filter(g => (S.listFilter === 'all' ? gStatus(g) !== 'ref' : gStatus(g) === S.listFilter) && (S.sexFilter === 'all' || sexGroup(g.sex) === S.sexFilter) && matchQ(g)).map(g => g.id);
 }
 const ACT = {
   'close-sheet': () => closeSheet(),
   'copy-here': () => { const i = document.createElement('input'); i.value = location.href; i.className = 'vh'; document.body.appendChild(i); copyText(i, '주소를 복사했습니다').finally(() => setTimeout(() => i.remove(), 500)); },
   'to-ref': async t => {
     const g = G(t.dataset.id); if (!g) return;
-    if (!await confirmSheet('혈통용 개체로 바꿀까요?', `<b>${esc(gLabel(g))}</b>을(를) 분양 목록에서 빼고 ‘혈통용(내 개체 아님)’으로 바꿉니다. 이 개체에 적어 둔 분양 정보는 지워지고, 혈통 연결은 그대로 남습니다.`, '혈통용으로 바꾸기')) return;
-    try { await q(sb.from('geckos').update({status:'ref', sale:null, updated_at:new Date().toISOString()}).eq('id', g.id)); toast('혈통용 개체로 바꿨습니다'); await refresh(); }
+    if (!await confirmSheet('혈관리용 개체로 바꿀까요?', `<b>${esc(gLabel(g))}</b>을(를) 분양 목록에서 빼고 ‘혈관리용(내 개체 아님)’으로 바꿉니다. 이 개체에 적어 둔 분양 정보는 지워지고, 혈통 연결은 그대로 남습니다.`, '혈관리용으로 바꾸기')) return;
+    try { await q(sb.from('geckos').update({status:'ref', sale:null, updated_at:new Date().toISOString()}).eq('id', g.id)); toast('혈관리용 개체로 바꿨습니다'); await refresh(); }
     catch (e) { toast(errMsg(e), 'bad'); }
   },
   'pub-retry': t => { S.pub.delete(pubKey(t.dataset.id, !!t.dataset.preview)); render(); },
@@ -1729,7 +1787,7 @@ const ACT = {
   'new-clutch': t => openClutchForm(null, {dam:t.dataset.dam}),
   'edit-clutch': t => openClutchForm(t.dataset.id),
   'clear-samples': () => clearSamples(),
-  'lab-all': () => { [...S.geckos.values()].filter(g => S.labAll || gStatus(g) === 'active').forEach(g => S.labSel.add(g.id)); render(); },
+  'lab-all': () => { [...S.geckos.values()].filter(g => S.labAll ? gStatus(g) !== 'ref' : gStatus(g) === 'active').forEach(g => S.labSel.add(g.id)); render(); },
   'lab-none': () => { S.labSel.clear(); render(); },
   'lab-scope': () => { S.labAll = !S.labAll; render(); },
   'lab-make': t => { busy(t, true, '만드는 중…'); makeLabels().catch(() => { toast('라벨을 만들지 못했습니다.', 'bad'); render(); }); },
