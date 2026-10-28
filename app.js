@@ -6,7 +6,13 @@ const SEX = {
   u:{t:'미확인', s:'?', c:'unk'}, pm:{t:'수컷 추정', s:'♂?', c:'male'}, pf:{t:'암컷 추정', s:'♀?', c:'female'},
   m:{t:'수컷', s:'♂', c:'male'}, f:{t:'암컷', s:'♀', c:'female'}
 };
-const STATUS = { active:'보유 중', sold:'분양 완료', dead:'사망' };
+const STATUS = { active:'보유 중', sold:'분양 완료', dead:'사망', ref:'혈통용' };
+const STATUS_OPT = { active:'보유 중', sold:'분양 완료', dead:'사망', ref:'혈통용 (내 개체 아님 · 혈통도에만 사용)' };
+const ROLE_RO = { admin:'관리자로', keeper:'기록 담당으로', viewer:'보기 전용으로' };
+const APP_NAME = '게코 관리노트';
+const UA = navigator.userAgent || '';
+const IN_KAKAO = /KAKAOTALK/i.test(UA);
+const IN_APP = IN_KAKAO || /Instagram|FBAN|FBAV|Line\/|NAVER\(inapp|DaumApps|everytimeApp|; wv\)/i.test(UA);
 const ATE = { all:'다 먹음', some:'조금 먹음', none:'안 먹음' };
 const LOGT = { weight:'무게', feed:'급여', shed:'탈피', poop:'배변', note:'메모' };
 const SHEDQ = { ok:'정상', stuck:'불완전(잔여 탈피)' };
@@ -241,7 +247,7 @@ async function backup() {
   toast('백업 파일을 만드는 중…');
   try {
     const fid = S.farm.id;
-    const out = {app:'크레 개체 노트', exportedAt:new Date().toISOString(), account:S.user && S.user.email, farm:S.farm};
+    const out = {app:APP_NAME, exportedAt:new Date().toISOString(), account:S.user && S.user.email, farm:S.farm};
     out.members = S.members.map(m => ({email:m.email, display_name:m.display_name, role:m.role, joined_at:m.joined_at}));
     for (const t of ['geckos', 'clutches', 'pairings']) out[t] = await q(sb.from(t).select('*').eq('farm_id', fid));
     out.logs = [];
@@ -294,14 +300,18 @@ function schedule() { if (pending) return; pending = true; requestAnimationFrame
 const NEED = {
   'new-gecko':'admin', 'edit-gecko':'admin', 'sale':'admin', 'sale-cancel':'admin', 'new-pair':'admin', 'edit-pair':'admin',
   'new-clutch':'admin', 'edit-clutch':'admin', 'load-samples':'admin', 'clear-samples':'admin', 'backup':'admin',
-  'make-invite':'admin', 'revoke-invite':'admin', 'remove-member':'admin',
+  'make-invite':'admin', 'revoke-invite':'admin', 'remove-member':'admin', 'to-ref':'admin',
   'log':'log', 'log-edit':'log', 'bulk':'log', 'bulk-feed':'log', 'feed-over':'log'
 };
 function setTabs(tab) { document.querySelectorAll('.tabs a').forEach(a => a.setAttribute('aria-current', a.dataset.tab === tab ? 'page' : 'false')); }
 function render() {
   const r = route(), view = $('#view'), signedIn = S.auth === 'in';
   document.body.classList.toggle('signed-out', !signedIn || S.needFarm);
-  const brandSub = $('.brand i'); if (brandSub) brandSub.textContent = signedIn && S.farm ? S.farm.name : 'Correlophus ciliatus';
+  const own = signedIn && S.farm && !S.needFarm;
+  const bm = $('.brand b'), bs = $('.brand i');
+  if (bm) bm.textContent = own ? S.farm.name : APP_NAME;
+  if (bs) bs.textContent = own ? '관리노트' : 'Correlophus ciliatus';
+  document.title = own ? `${S.farm.name} 관리노트` : APP_NAME;
   view.classList.remove('bulking');
   S.chartData = null;
   if (!signedIn) {
@@ -340,7 +350,8 @@ function vAuth() {
   if (S.auth === 'unconfigured') return `<div class="empty"><h2>서버 연결 정보가 없습니다</h2><p><code>config.js</code> 파일에 Supabase 주소(Project URL)와 공개 키(Publishable key)를 넣어야 합니다.</p></div>`;
   return `<section class="auth">
     <p class="auth-eyebrow">Correlophus ciliatus</p>
-    <h1 class="auth-title">크레 개체 노트</h1>
+    <h1 class="auth-title">${APP_NAME}</h1>
+    ${inAppNote()}
     <p class="auth-text">개체 등록, 무게·급여 기록, 혈통과 브리딩을 휴대폰과 PC에서 함께 관리합니다.</p>
     <button class="btn primary auth-btn" data-act="login">${GOOGLE_SVG}Google 계정으로 로그인</button>
     ${S.authErr ? `<p class="err">${esc(S.authErr)}</p>` : ''}
@@ -386,6 +397,7 @@ function vPublic(id, preview) {
   const real = photoUrl(pg);
   const photo = real ? `<img class="hero-photo" data-ph src="${esc(real)}" alt="${esc(gTitle(pg))} 사진">`
     : `<div class="hero-photo ph-empty${fb ? ' has-fb' : ''}">${fb ? `<img data-ph src="${esc(fb)}" alt="" referrerpolicy="no-referrer">` : FOOT}<span class="ph-tag">사진 없음</span></div>`;
+  document.title = `${[pg.code, pg.name].filter(Boolean).join(' ') || gTitle(pg)} · 공개 카드`;
   let h = `${top}${other}<article class="pcard">`;
   if (farm) {
     const logo = farm.logo && S.urls.get(farm.logo);
@@ -417,7 +429,7 @@ function vPublic(id, preview) {
     h += `<section class="panel"><div class="ph3"><h3>분양 정보</h3></div><dl class="facts">${sl.date ? `<dt>분양일</dt><dd>${fmtD(sl.date)}</dd>` : ''}${sl.price ? `<dt>분양가</dt><dd>${fmtWon(sl.price)}</dd>` : ''}${sl.to ? `<dt>분양받은 분</dt><dd>${esc(sl.to)}</dd>` : ''}</dl></section>`;
   }
   if (vis.notes && d.notes) h += `<section class="panel"><div class="ph3"><h3>메모</h3></div><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(d.notes)}</p></section>`;
-  h += `<footer class="pc-foot"><span>크레 개체 노트 공개 카드${farm ? ` · ${esc(farm.name || '')}에서 공개한 정보입니다` : ''}</span>${signIn}</footer></article>`;
+  h += `<footer class="pc-foot"><span>${APP_NAME} 공개 카드${farm ? ` · ${esc(farm.name || '')}에서 공개한 정보입니다` : ''}</span>${signIn}</footer></article>`;
   return h;
 }
 
@@ -431,24 +443,33 @@ async function fetchJoin(code) {
 }
 function vJoin(code) {
   const c = S.join.get(code);
-  if (!c || c.loading) { fetchJoin(code); return loadingHTML('초대 정보를 확인하는 중…'); }
-  if (c.err) return `<div class="empty"><h2>초대 정보를 확인하지 못했습니다</h2><p>${esc(c.err)}</p></div>`;
+  if (!c || c.loading) { fetchJoin(code); return loadingHTML('초대장을 확인하는 중…'); }
+  if (c.err) return `<div class="empty"><h2>초대장을 확인하지 못했습니다</h2><p>${esc(c.err)}</p></div>`;
   const i = c.data || {};
   if (!i.ok) {
-    const why = {not_found:'초대 링크가 올바르지 않습니다.', used:'이미 사용된 초대 링크입니다. 관리자에게 새 링크를 요청하세요.', expired:'기간(7일)이 지난 초대 링크입니다. 관리자에게 새 링크를 요청하세요.'}[i.reason] || '초대 링크를 쓸 수 없습니다.';
-    return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm || '초대 링크')}</h1><p class="auth-text">${why}</p>${S.auth === 'in' ? '<a class="btn" href="#list">개체 목록으로</a>' : ''}</section>`;
+    const why = {not_found:'초대 링크가 올바르지 않습니다.', used:'이미 사용된 초대장입니다. 보낸 분께 새 초대장을 요청하세요.', expired:'기간(7일)이 지난 초대장입니다. 보낸 분께 새 초대장을 요청하세요.'}[i.reason] || '이 초대장은 쓸 수 없습니다.';
+    return `<section class="auth invite-card"><p class="auth-eyebrow">초대장</p><h1 class="auth-title">${esc(i.farm || '초대장')}</h1><p class="auth-text">${why}</p>${S.auth === 'in' ? '<a class="btn" href="#list">개체 목록으로</a>' : ''}</section>`;
   }
+  document.title = `${i.farm} 초대장`;
+  const head = `<p class="auth-eyebrow">초대장</p><h1 class="auth-title">${esc(i.farm)}</h1>
+    <p class="ic-from">${i.from ? `<b>${esc(i.from)}</b>님이 보낸 초대장입니다.` : '농장 관리노트 초대장입니다.'}</p>
+    <dl class="facts ic-facts"><dt>권한</dt><dd><b>${ROLE[i.role]}</b> · ${ROLE_HINT[i.role]}</dd>${i.expires ? `<dt>유효기간</dt><dd>${fmtD(String(i.expires).slice(0, 10))}까지</dd>` : ''}</dl>`;
+  const foot = `<p class="ic-app">${APP_NAME} · 크레스티드 게코 개체 관리</p>`;
   if (S.auth !== 'in') {
-    return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm)}</h1>
-      <p class="auth-text"><b>${ROLE[i.role]}</b> 권한으로 초대받았습니다. 구글 계정으로 로그인하면 참여할 수 있습니다.</p>
-      <button class="btn primary auth-btn" data-act="login">${GOOGLE_SVG}Google 계정으로 로그인</button>
-      <p class="hint">초대한 관리자가 내 구글 계정을 사용자로 등록해 두어야 로그인할 수 있습니다.</p></section>`;
+    return `<section class="auth invite-card">${head}${inAppNote()}
+      <button class="btn primary auth-btn" data-act="login">${GOOGLE_SVG}Google 계정으로 로그인하고 참여</button>
+      <p class="hint">구글 로그인이 안 되면 초대한 분께 내 구글 계정을 사용자로 등록해 달라고 알려 주세요.</p>${foot}</section>`;
   }
-  if (i.member) return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm)}</h1><p class="auth-text">이미 이 농장의 구성원입니다. 설정에서 농장을 전환할 수 있습니다.</p><a class="btn" href="#setup">설정으로</a></section>`;
-  return `<section class="auth"><p class="auth-eyebrow">농장 초대</p><h1 class="auth-title">${esc(i.farm)}</h1>
-    <p class="auth-text"><b>${ROLE[i.role]}</b> 권한으로 참여합니다. ${ROLE_HINT[i.role]}.</p>
-    <button class="btn primary auth-btn" data-act="accept-invite" data-code="${esc(code)}">참여하기</button>
-    ${S.needFarm ? '' : '<a class="btn" href="#list">나중에</a>'}</section>`;
+  if (i.member) return `<section class="auth invite-card">${head}<p class="auth-text">이미 이 농장의 구성원입니다. 설정에서 농장을 전환할 수 있습니다.</p><a class="btn" href="#setup">설정으로</a>${foot}</section>`;
+  return `<section class="auth invite-card">${head}
+    <button class="btn primary auth-btn" data-act="accept-invite" data-code="${esc(code)}">초대 수락하고 참여하기</button>
+    ${S.needFarm ? '' : '<a class="btn" href="#list">나중에</a>'}${foot}</section>`;
+}
+function inAppNote() {
+  if (!IN_APP) return '';
+  return IN_KAKAO
+    ? `<div class="notice inapp"><p>카카오톡 안에서는 구글 로그인이 막혀 있습니다. 로그인 버튼을 누르면 휴대폰의 기본 브라우저로 열어 드립니다.</p></div>`
+    : `<div class="notice inapp"><p>이 앱 안의 브라우저에서는 구글 로그인이 막혀 있습니다. 화면 위나 아래의 메뉴(⋮ 또는 …)에서 <b>‘다른 브라우저로 열기’</b>를 눌러 Chrome이나 Safari에서 열어 주세요.</p><button class="btn small" data-act="copy-here">주소 복사</button></div>`;
 }
 function vOnboard() {
   return `<section class="auth"><p class="auth-eyebrow">시작하기</p><h1 class="auth-title">내 농장 만들기</h1>
@@ -485,7 +506,7 @@ async function switchFarm(fid, goTo) {
 function vList() {
   if (!S.loaded.g) return loadingHTML('개체 목록을 불러오는 중…');
   const all = [...S.geckos.values()];
-  const cnt = {active:0, sold:0, dead:0};
+  const cnt = {active:0, sold:0, dead:0, ref:0};
   all.forEach(g => { cnt[gStatus(g)] = (cnt[gStatus(g)] || 0) + 1; });
   let arr = all.filter(g => S.listFilter === 'all' || gStatus(g) === S.listFilter);
   if (S.sexFilter !== 'all') arr = arr.filter(g => sexGroup(g.sex) === S.sexFilter);
@@ -499,7 +520,7 @@ function vList() {
       <div class="chips">${over.map(g => { const f = feedInfo(g); return `<a class="chip" href="#g-${g.id}"><span>${esc(gLabel(g))}</span><span class="d">${f.days == null ? '기록 없음' : 'D+' + f.days}</span></a>`; }).join('')}</div>
       <p class="hint">마지막 급여 후 ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일 이상 지난 개체입니다. 기준은 설정에서 바꿀 수 있습니다.</p></section>`;
   }
-  const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['all', '전체']].filter(([v]) => v !== 'dead' || cnt.dead);
+  const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['ref', '혈통용'], ['all', '전체']].filter(([v]) => (v !== 'dead' || cnt.dead) && (v !== 'ref' || cnt.ref));
   h += `<div class="toolbar">
     <div class="seg">${segs.map(([v, t]) => `<button data-act="filter" data-v="${v}" aria-pressed="${S.listFilter === v}">${t}<span class="n">${v === 'all' ? all.length : (cnt[v] || 0)}</span></button>`).join('')}</div>
     <div class="tb-right">
@@ -573,8 +594,9 @@ function vGecko(id) {
       </div>
     </div>
   </section>
-  <section class="qlog" aria-label="빠른 기록">${Object.keys(LOGT).map(t => `<button class="qbtn" data-act="log" data-t="${t}" data-id="${id}"><span class="qi">${QICON[t]}</span>${LOGT[t]}</button>`).join('')}</section>
-  <section class="stats" aria-label="최근 상태">
+  ${st === 'ref' ? `<div class="notice"><p><b>혈통용 개체입니다.</b> 내 보유 개체가 아니라 혈통도를 잇기 위해 등록한 개체라서 보유 목록·급여 알림·분양 목록에는 나오지 않습니다.</p></div>` : ''}
+  <section class="qlog" aria-label="빠른 기록"${st === 'ref' ? ' hidden' : ''}>${Object.keys(LOGT).map(t => `<button class="qbtn" data-act="log" data-t="${t}" data-id="${id}"><span class="qi">${QICON[t]}</span>${LOGT[t]}</button>`).join('')}</section>
+  <section class="stats" aria-label="최근 상태"${st === 'ref' ? ' hidden' : ''}>
     ${stat('최근 무게', L.weight ? `${fmtG(L.weight.g)} g` : '—', L.weight ? fmtD(L.weight.d) : '기록 없음')}
     ${stat('마지막 급여', fi.days == null ? '—' : fi.days === 0 ? '오늘' : `D+${fi.days}`, L.feed ? `${ATE[L.feed.ate] || ''}${L.feed.food ? ' · ' + L.feed.food : ''}` : '기록 없음', st === 'active' && fi.over)}
     ${stat('마지막 탈피', L.shed ? (daysSince(L.shed.d) === 0 ? '오늘' : `D+${daysSince(L.shed.d)}`) : '—', L.shed ? fmtD(L.shed.d) : '기록 없음')}
@@ -595,7 +617,9 @@ function vGecko(id) {
   const tlPanel = timeline(g, loaded);
   const notesPanel = g.notes ? `<section class="panel o5"><div class="ph3"><h3>메모</h3></div><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(g.notes)}</p></section>` : '';
   const salePanel = st === 'sold' ? salePanelHTML(g) : '';
-  h += `<div class="dgrid"><div class="col">${chartPanel}${tlPanel}</div><div class="col">${pedPanel}${breedPanel}${notesPanel}${salePanel}</div></div>`;
+  h += st === 'ref'
+    ? `<div class="dgrid"><div class="col">${pedPanel}</div><div class="col">${breedPanel}${notesPanel}</div></div>`
+    : `<div class="dgrid"><div class="col">${chartPanel}${tlPanel}</div><div class="col">${pedPanel}${breedPanel}${notesPanel}${salePanel}</div></div>`;
   return h;
 }
 const stat = (k, v, s, bad) => `<div class="stat"><span class="k">${k}</span><span class="v${bad ? ' bad' : ''}">${esc(v)}</span><span class="s">${esc(s)}</span></div>`;
@@ -777,7 +801,7 @@ function vSales() {
   for (const [y, list] of years) {
     const sum = list.reduce((n, g) => n + (+(g.sale || {}).price || 0), 0);
     h += `<section class="panel"><div class="ph3"><h3>${/^\d{4}$/.test(y) ? y + '년' : y}</h3><span class="sumline"><span><b>${list.length}마리</b></span>${sum ? `<span>합계 <b>${fmtWon(sum)}</b></span>` : ''}</span></div>
-      <ul class="rows">${list.map(g => { const s = g.sale || {}, sx = SEX[g.sex || 'u']; return `<li><a class="rowbtn" href="#g-${g.id}"><span class="r1"><span class="mono">${esc(g.code || '')}</span> ${esc(gTitle(g))} <span class="sex ${sx.c}">${sx.s}</span></span><span class="r2">${esc(g.morph || '모프 미기록')} · ${esc(s.to || '분양받은 분 미기록')}</span><span class="rr"><span class="mono hint">${fmtD(s.date)}</span>${s.price ? `<span class="pill">${fmtWon(s.price)}</span>` : ''}</span></a></li>`; }).join('')}</ul></section>`;
+      <ul class="rows">${list.map(g => { const s = g.sale || {}, sx = SEX[g.sex || 'u']; return `<li class="sale-li"><a class="rowbtn" href="#g-${g.id}"><span class="r1"><span class="mono">${esc(g.code || '')}</span> ${esc(gTitle(g))} <span class="sex ${sx.c}">${sx.s}</span></span><span class="r2">${esc(g.morph || '모프 미기록')} · ${esc(s.to || '분양받은 분 미기록')}</span><span class="rr"><span class="mono hint">${fmtD(s.date)}</span>${s.price ? `<span class="pill">${fmtWon(s.price)}</span>` : ''}</span></a><button class="icon-btn to-ref" data-act="to-ref" data-id="${g.id}" title="실제로 분양한 개체가 아니라 혈통을 잇기 위해 등록한 개체라면 혈통용으로 옮기세요">혈통용으로</button></li>`; }).join('')}</ul></section>`;
   }
   return h;
 }
@@ -826,7 +850,7 @@ function vSetup() {
   if (admin) {
     h += `<div class="invite"><div class="field"><label for="inv-role">초대할 권한</label><select id="inv-role">${roleOpts('keeper')}</select></div><button class="btn primary" data-act="make-invite">초대 링크 만들기</button></div>
       <p class="hint">관리자: ${ROLE_HINT.admin} · 기록 담당: ${ROLE_HINT.keeper} · 보기 전용: ${ROLE_HINT.viewer}</p>
-      ${S.invites.length ? `<div><div class="lbl" style="margin-bottom:4px">사용 대기 중인 초대 링크</div><ul class="rows">${S.invites.map(i => `<li class="inv"><span><b>${ROLE[i.role]}</b> <span class="hint">· ${fmtD(i.expires_at.slice(0, 10))}까지</span></span><span class="acts"><button class="btn small" data-act="copy-invite" data-code="${esc(i.code)}">링크 복사</button><button class="icon-btn" data-act="revoke-invite" data-code="${esc(i.code)}">취소</button></span></li>`).join('')}</ul></div>` : ''}
+      ${S.invites.length ? `<div><div class="lbl" style="margin-bottom:4px">사용 대기 중인 초대 링크</div><ul class="rows">${S.invites.map(i => `<li class="inv"><span><b>${ROLE[i.role]}</b> <span class="hint">· ${fmtD(i.expires_at.slice(0, 10))}까지</span></span><span class="acts"><button class="btn small" data-act="copy-invite" data-code="${esc(i.code)}">초대장 다시 보기</button><button class="icon-btn" data-act="revoke-invite" data-code="${esc(i.code)}">취소</button></span></li>`).join('')}</ul></div>` : ''}
       <p class="hint">구글 로그인이 ‘테스트’ 상태라면, 초대받는 분의 구글 계정을 Google Cloud 콘솔의 테스트 사용자에 먼저 추가해야 로그인할 수 있습니다.</p>`;
   }
   h += `</section>`;
@@ -894,17 +918,31 @@ async function makeInvite() {
     openInviteSheet(code, role); refresh();
   } catch (e) { toast(errMsg(e), 'bad'); }
 }
-function openInviteSheet(code, role) {
-  const link = inviteLink(code);
-  const sh = openSheet(`<div class="form">${sheetHead('초대 링크')}
-    <p><b>${esc(S.farm.name)}</b>에 <b>${ROLE[role]}</b> 권한으로 초대하는 링크입니다. 카카오톡이나 문자로 보내 주세요.</p>
-    <div class="linkbox"><input id="inv-link" readonly value="${esc(link)}"><button type="button" class="btn small primary" id="inv-copy">복사</button></div>
-    <p class="hint">7일 동안 한 번만 쓸 수 있습니다. 구글 로그인이 ‘테스트’ 상태라면 받는 분의 구글 계정을 Google Cloud 콘솔의 테스트 사용자에 먼저 추가해 주세요.</p>
-    <div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">닫기</button></div></div>`, {label:'초대 링크'});
-  sh.querySelector('#inv-copy').addEventListener('click', () => copyText(sh.querySelector('#inv-link')));
+function inviteMessage(code, role) {
+  const mine = S.members.find(m => m.user_id === (S.user && S.user.id));
+  const from = (mine && (mine.display_name || mine.email)) || '';
+  return `[${S.farm.name} 초대장]\n${from ? `${from}님이 ` : ''}${S.farm.name} 관리노트에 ${ROLE_RO[role]} 초대했습니다.\n아래 링크를 눌러 구글 계정으로 로그인하면 바로 참여할 수 있어요. (7일 동안 한 번 사용 가능)\n${inviteLink(code)}`;
 }
-async function copyText(input) {
-  try { await navigator.clipboard.writeText(input.value); toast('링크를 복사했습니다'); }
+function openInviteSheet(code, role) {
+  const msg = inviteMessage(code, role);
+  const sh = openSheet(`<div class="form">${sheetHead(`${esc(S.farm.name)} 초대장`)}
+    <p><b>${ROLE[role]}</b> 권한으로 초대하는 초대장입니다. 아래 문구를 그대로 카카오톡이나 문자로 보내 주세요.</p>
+    <textarea id="inv-msg" rows="5" readonly class="inv-msg">${esc(msg)}</textarea>
+    <div class="actions">${navigator.share ? '<button type="button" class="btn primary" id="inv-share">초대장 보내기</button>' : ''}<button type="button" class="btn${navigator.share ? '' : ' primary'}" id="inv-copy">초대 문구 복사</button><button type="button" class="btn" id="inv-copy-link">링크만 복사</button></div>
+    <input id="inv-link" class="vh" readonly value="${esc(inviteLink(code))}" tabindex="-1">
+    <p class="hint">링크를 열면 ‘${esc(S.farm.name)} 초대장’ 화면이 보내는 분 이름과 함께 열립니다. 7일 동안 한 번만 쓸 수 있습니다.</p>
+    <p class="hint">구글 로그인이 ‘테스트’ 상태라면 받는 분의 구글 계정을 Google Cloud 콘솔의 테스트 사용자에 먼저 추가해 주세요.</p>
+    <div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">닫기</button></div></div>`, {label:'초대장'});
+  sh.querySelector('#inv-copy').addEventListener('click', () => copyText(sh.querySelector('#inv-msg'), '초대 문구를 복사했습니다'));
+  sh.querySelector('#inv-copy-link').addEventListener('click', () => copyText(sh.querySelector('#inv-link')));
+  const shb = sh.querySelector('#inv-share');
+  if (shb) shb.addEventListener('click', async () => {
+    try { await navigator.share({title:`${S.farm.name} 초대장`, text:msg}); }
+    catch (e) { if (e && e.name !== 'AbortError') copyText(sh.querySelector('#inv-msg'), '초대 문구를 복사했습니다'); }
+  });
+}
+async function copyText(input, msg = '링크를 복사했습니다') {
+  try { await navigator.clipboard.writeText(input.value); toast(msg); }
   catch { input.focus(); input.select(); toast('링크를 선택했습니다. 길게 눌러 복사하세요.'); }
 }
 
@@ -986,18 +1024,20 @@ async function compress(file, max = 1400, type = 'image/jpeg') {
 function openGeckoForm(id, pre = {}) {
   const g = id ? G(id) : null;
   if (id && !g) return;
-  const v = g ? {...g} : {code:nextCode(), sex:'u', source:'buy', ...pre};
+  const isRef = g ? gStatus(g) === 'ref' : pre.status === 'ref';
+  const v = g ? {...g} : {code:pre.status === 'ref' ? '' : nextCode(), sex:'u', source:pre.status === 'ref' ? 'other' : 'buy', ...pre};
   const gid = id || rid();
   let photo = v.photo || null, uploading = false;
   const parentField = w => {
     const cur = v[w + 'Id'] ? 'id:' + v[w + 'Id'] : v[w + 'Ext'] ? 'ext' : '', isS = w === 'sire';
-    return `<div class="field"><label for="f-${w}">${isS ? '부 (아빠)' : '모 (엄마)'}</label><select id="f-${w}" data-ext="f-${w}-ext"><option value="">미상</option>${geckoOptions(isS ? isMaleish : isFemaleish, v[w + 'Id'], id)}<option value="ext"${cur === 'ext' ? ' selected' : ''}>목록에 없는 개체 (직접 입력)</option></select>
+    return `<div class="field"><label for="f-${w}">${isS ? '부 (아빠)' : '모 (엄마)'}</label><select id="f-${w}" data-ext="f-${w}-ext" data-role="${w}"><option value="">미상</option>${geckoOptions(isS ? isMaleish : isFemaleish, v[w + 'Id'], id)}<option value="ext"${cur === 'ext' ? ' selected' : ''}>이름만 적기 (직접 입력)</option><option value="__new">+ 새 혈통용 개체 등록 (조부모까지 이을 때)</option></select>
       <input id="f-${w}-ext" placeholder="${isS ? '예: OO파충류 수컷, 릴리화이트' : '예: OO파충류 암컷, 할리퀸'}" value="${esc(v[w + 'Ext'] || '')}" autocomplete="off"${cur === 'ext' ? '' : ' hidden'}></div>`;
   };
-  const sh = openSheet(`<form class="form" id="gform" novalidate>${sheetHead(g ? '개체 정보 수정' : '개체 등록')}
+  const sh = openSheet(`<form class="form" id="gform" novalidate>${sheetHead(g ? '개체 정보 수정' : isRef ? '혈통용 개체 등록' : '개체 등록')}
+    ${isRef && !g ? `<p class="who">내 개체가 아니라 혈통도를 잇기 위한 개체입니다(예: 부모의 부모). 보유 목록·급여 알림·분양 목록에는 나오지 않고, 혈통도와 마인드맵에만 쓰입니다. 이 개체의 부모도 이어서 지정할 수 있습니다.</p>` : ''}
     <div class="photo-pick"><div class="pp-prev" id="pp-prev">${photoUrl(v) ? `<img src="${esc(photoUrl(v))}" alt="">` : '<span>사진 없음</span>'}</div>
       <div class="pp-ctl"><label class="btn small" for="f-photo">${photo ? '사진 바꾸기' : '사진 선택'}</label><input id="f-photo" type="file" accept="image/*" hidden><p class="hint" id="pp-st">휴대폰에서는 바로 촬영할 수도 있습니다.</p></div></div>
-    <div class="grid2"><div class="field"><label for="f-code">개체번호</label><input id="f-code" value="${esc(v.code || '')}" autocomplete="off" placeholder="예: CR-001"></div>
+    <div class="grid2"><div class="field"><label for="f-code">개체번호</label><input id="f-code" value="${esc(v.code || '')}" autocomplete="off" placeholder="${isRef ? '선택 (예: 브리더 개체번호)' : '예: CR-001'}"></div>
       <div class="field"><label for="f-name">이름(애칭)</label><input id="f-name" value="${esc(v.name || '')}" autocomplete="off" placeholder="선택"></div></div>
     <div class="field"><label for="f-morph">모프</label><input id="f-morph" list="morph-list" value="${esc(v.morph || '')}" autocomplete="off" placeholder="예: 할리퀸 핀스트라이프"><datalist id="morph-list">${MORPHS.map(m => `<option value="${m}"></option>`).join('')}</datalist></div>
     <div class="grid2"><div class="field"><label for="f-sex">성별</label><select id="f-sex">${Object.entries(SEX).map(([k, s]) => `<option value="${k}"${(v.sex || 'u') === k ? ' selected' : ''}>${s.t}</option>`).join('')}</select></div>
@@ -1009,7 +1049,7 @@ function openGeckoForm(id, pre = {}) {
       <div class="field"><label for="f-src">출처</label><select id="f-src">${Object.entries(SRC).map(([k, t]) => `<option value="${k}"${(v.source || 'buy') === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
     <div class="field"><label for="f-srcn">입양처 · 비고</label><input id="f-srcn" value="${esc(v.sourceNote || '')}" autocomplete="off"></div>
     <fieldset class="fs"><legend>혈통 (부모)</legend>${parentField('sire')}${parentField('dam')}<p class="hint">목록에 있는 개체를 고르면 조부모까지 혈통도가 이어집니다.</p></fieldset>
-    ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS).map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
+    ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS_OPT).map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label for="f-notes">메모</label><textarea id="f-notes" rows="3">${esc(v.notes || '')}</textarea></div>
     <fieldset class="fs"><legend>QR 공개 카드</legend>
       <label class="check"><input type="checkbox" id="f-pubon"${v.publicOn === false ? '' : ' checked'}><span>QR 공개 카드 사용<small>끄면 로그인한 농장 구성원만 볼 수 있습니다.</small></span></label>
@@ -1020,7 +1060,24 @@ function openGeckoForm(id, pre = {}) {
     </fieldset>
     <p class="err" hidden></p>
     <div class="sh-foot">${g ? '<button type="button" class="btn danger" id="f-del">삭제</button>' : ''}<span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="f-save">저장</button></div></form>`, {label:g ? '개체 정보 수정' : '개체 등록'});
-  sh.querySelectorAll('select[data-ext]').forEach(s => s.addEventListener('change', () => { const x = sh.querySelector('#' + s.dataset.ext); x.hidden = s.value !== 'ext'; if (!x.hidden) x.focus(); }));
+  sh.querySelectorAll('select[data-ext]').forEach(s => {
+    s.dataset.prev = s.value;
+    s.addEventListener('change', () => {
+      if (s.value === '__new') {
+        const role = s.dataset.role;
+        s.value = s.dataset.prev;
+        openGeckoForm(null, {status:'ref', sex:role === 'sire' ? 'm' : 'f', onCreated:nid => {
+          const ng = G(nid); if (!ng) return;
+          const o = document.createElement('option'); o.value = 'id:' + nid; o.textContent = `${gLabel(ng)}${ng.morph ? ' · ' + ng.morph : ''} (혈통용)`;
+          s.insertBefore(o, s.querySelector('option[value=ext]')); s.value = o.value; s.dataset.prev = o.value;
+          sh.querySelector('#' + s.dataset.ext).hidden = true;
+        }});
+        return;
+      }
+      s.dataset.prev = s.value;
+      const x = sh.querySelector('#' + s.dataset.ext); x.hidden = s.value !== 'ext'; if (!x.hidden) x.focus();
+    });
+  });
   const hm = sh.querySelector('#f-hmode');
   hm.addEventListener('change', () => {
     sh.querySelector('#f-hatch-f').hidden = hm.value === 'unknown'; sh.querySelector('#f-hatch-u').hidden = hm.value !== 'unknown';
@@ -1071,8 +1128,9 @@ function openGeckoForm(id, pre = {}) {
         if (g.photo && g.photo !== photo) sb.storage.from('photos').remove([g.photo]).catch(() => {});
         closeSheet(); toast('저장했습니다'); await refresh();
       } else {
-        await q(sb.from('geckos').insert({id:gid, farm_id:S.farm.id, ...row, status:'active'}));
+        await q(sb.from('geckos').insert({id:gid, farm_id:S.farm.id, ...row, status:pre.status === 'ref' ? 'ref' : 'active'}));
         if (pre.fromClutch) await linkHatch(pre.fromClutch, gid, row.hatch_date);
+        if (pre.onCreated) { closeSheet(); toast('혈통용 개체를 등록했습니다'); await refresh(); pre.onCreated(gid); return; }
         closeSheet(); toast('개체를 등록했습니다'); await refresh(); go('g-' + gid);
       }
     } catch (e) { busy(btn, false); showErr(sh, errMsg(e)); }
@@ -1614,6 +1672,13 @@ function visibleIds() {
 }
 const ACT = {
   'close-sheet': () => closeSheet(),
+  'copy-here': () => { const i = document.createElement('input'); i.value = location.href; i.className = 'vh'; document.body.appendChild(i); copyText(i, '주소를 복사했습니다').finally(() => setTimeout(() => i.remove(), 500)); },
+  'to-ref': async t => {
+    const g = G(t.dataset.id); if (!g) return;
+    if (!await confirmSheet('혈통용 개체로 바꿀까요?', `<b>${esc(gLabel(g))}</b>을(를) 분양 목록에서 빼고 ‘혈통용(내 개체 아님)’으로 바꿉니다. 이 개체에 적어 둔 분양 정보는 지워지고, 혈통 연결은 그대로 남습니다.`, '혈통용으로 바꾸기')) return;
+    try { await q(sb.from('geckos').update({status:'ref', sale:null, updated_at:new Date().toISOString()}).eq('id', g.id)); toast('혈통용 개체로 바꿨습니다'); await refresh(); }
+    catch (e) { toast(errMsg(e), 'bad'); }
+  },
   'pub-retry': t => { S.pub.delete(pubKey(t.dataset.id, !!t.dataset.preview)); render(); },
   'switch-farm': t => switchFarm(t.dataset.farm, t.dataset.go),
   'accept-invite': async t => {
@@ -1626,7 +1691,7 @@ const ACT = {
     sh.querySelector('#nf').addEventListener('submit', async ev => { ev.preventDefault(); const b = sh.querySelector('#nf-save'); busy(b, true, '만드는 중…'); try { closeSheet(); await createFarm(fval(sh, 'nf-name')); } catch (e) { busy(b, false); toast(errMsg(e), 'bad'); } });
   },
   'make-invite': () => makeInvite(),
-  'copy-invite': t => { const i = document.createElement('input'); i.value = inviteLink(t.dataset.code); i.className = 'vh'; document.body.appendChild(i); copyText(i).finally(() => setTimeout(() => i.remove(), 500)); },
+  'copy-invite': t => { const inv = S.invites.find(x => x.code === t.dataset.code); if (inv) openInviteSheet(inv.code, inv.role); },
   'revoke-invite': async t => { try { await q(sb.from('farm_invites').delete().eq('code', t.dataset.code)); toast('초대 링크를 취소했습니다'); S.setupDirty = false; await refresh(); } catch (e) { toast(errMsg(e), 'bad'); } },
   'remove-member': async t => {
     const m = S.members.find(x => x.user_id === t.dataset.uid); if (!m) return;
@@ -1717,6 +1782,8 @@ window.addEventListener('hashchange', () => {
 /* ---------- login & start ---------- */
 async function login() {
   S.authErr = '';
+  if (IN_KAKAO) { location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(location.href); return; }
+  if (IN_APP) { S.authErr = '이 앱 안의 브라우저에서는 구글 로그인이 되지 않습니다. 메뉴에서 ‘다른 브라우저로 열기’를 눌러 주세요.'; render(); return; }
   lsSet('gk.after', location.hash || '');
   try {
     const {error} = await sb.auth.signInWithOAuth({provider:'google', options:{redirectTo:appUrl()}});

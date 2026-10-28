@@ -390,3 +390,20 @@ code{font-family:var(--f-mono);font-size:.92em;background:var(--sunken);padding:
 .pp-prev.logo img{object-fit:contain;padding:8%}
 .mem-t .pill{align-self:flex-start;margin-top:2px}
 .seg.radio input:disabled+span{opacity:.4;cursor:not-allowed}
+
+/* farm-first brand */
+.brand{min-width:0}
+.brand b{max-width:min(46vw,320px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* invitation */
+.invite-card{gap:12px}
+.ic-from{font-size:15px;color:var(--ink-2)}
+.ic-facts{width:100%;padding:12px 14px;border:1px dashed var(--line-strong);border-radius:12px;background:var(--bg);margin:2px 0}
+.ic-app{font-size:12px;color:var(--muted);letter-spacing:.02em;margin-top:4px}
+.inv-msg{font-size:14px;line-height:1.55;resize:none;background:var(--bg)}
+.notice.inapp{width:100%;border-style:solid;border-color:var(--warn);background:var(--warn-soft);color:var(--ink)}
+
+/* sales rows with lineage action */
+.sale-li{display:flex;align-items:center;gap:6px}
+.sale-li .rowbtn{flex:1;min-width:0}
+.to-ref{flex:none;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 10px}
