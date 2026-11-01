@@ -27,6 +27,8 @@ const wdPicker = (name, days) => `<div class="wdpick" role="group">${WD_ORDER.ma
 const wdRead = (root, name) => [...root.querySelectorAll(`input[name=${name}]:checked`)].map(i => +i.value).sort();
 const wdText = days => !days || !days.length ? '없음' : days.length === 7 ? '매일' : WD_ORDER.filter(d => days.includes(d)).map(d => WD[d]).join('·');
 const CFG = window.GECKO_CONFIG || {};
+const LCAT = { expense:['개체 입양', '먹이', '용품', '사육장·인테리어', '병원·약', '전기·난방', '택배·운송', '기타 지출'], income:['분양', '용품 판매', '기타 수입'] };
+const LKIND = { expense:'지출', income:'수입' };
 const ROLE = { admin:'관리자', keeper:'기록 담당', viewer:'보기 전용' };
 const ROLE_HINT = { admin:'개체·브리딩·분양·설정·구성원까지 모두', keeper:'무게·급여·탈피·배변·메모 기록 추가와 수정', viewer:'보기만 가능' };
 const HATCHM = { exact:'정확한 날짜', approx:'대략(추정)', unknown:'알 수 없음' };
@@ -93,6 +95,7 @@ const lsDel = k => { try { localStorage.removeItem(k); } catch {} };
 const S = {
   auth:'loading', user:null, conn:'ok', urls:new Map(),
   farms:[], farm:null, role:null, members:[], invites:[], needFarm:false,
+  ledger:[], ledgerErr:'', lp:{mode:'month', y:+today().slice(0, 4), m:+today().slice(5, 7)},
   pub:new Map(), pubLoading:new Set(), join:new Map(),
   geckos:new Map(), clutches:new Map(), pairings:new Map(), settings:{...DEF},
   loaded:{g:false, c:false, p:false},
@@ -197,7 +200,7 @@ const gFromRow = r => ({
   acquiredDate:r.acquired_date, source:r.source, sourceNote:r.source_note || '', sireId:r.sire_id, sireExt:r.sire_ext || '',
   damId:r.dam_id, damExt:r.dam_ext || '', notes:r.notes || '', photo:r.photo_path, status:r.status || 'active', sale:r.sale,
   sample:r.sample, createdAt:Date.parse(r.created_at) || 0, last:{},
-  farmId:r.farm_id, feedDays:Array.isArray(r.feed_days) && r.feed_days.length ? r.feed_days : null, hatchMode:r.hatch_mode || 'exact', publicOn:r.public_on !== false, publicFields:r.public_fields || null
+  farmId:r.farm_id, acquiredPrice:r.acquired_price == null ? null : Number(r.acquired_price), feedDays:Array.isArray(r.feed_days) && r.feed_days.length ? r.feed_days : null, hatchMode:r.hatch_mode || 'exact', publicOn:r.public_on !== false, publicFields:r.public_fields || null
 });
 const logFromRow = r => ({id:r.id, t:r.type, d:r.date, g:r.grams == null ? null : Number(r.grams), food:r.food, ate:r.ate, q:r.quality, n:r.note, _i:Date.parse(r.created_at) || 0});
 const logToRow = (gid, e) => ({gecko_id:gid, farm_id:S.farm && S.farm.id, type:e.t, date:e.d, grams:e.t === 'weight' ? e.g : null, food:e.t === 'feed' ? (e.food || null) : null, ate:e.t === 'feed' ? (e.ate || 'all') : null, quality:nul(e.q), note:nul(e.n)});
@@ -234,6 +237,11 @@ async function loadAll() {
     const f = S.farm;
     S.settings = {feedAlertDays:f.feed_alert_days ?? DEF.feedAlertDays, feedMode:f.feed_mode || 'interval', feedDays:Array.isArray(f.feed_days) ? f.feed_days : [], foods:f.foods && f.foods.length ? f.foods : DEF.foods, codePrefix:f.code_prefix ?? DEF.codePrefix};
     S.members = members || []; S.invites = (invites || []).filter(i => Date.parse(i.expires_at) > Date.now());
+    S.ledger = []; S.ledgerErr = '';
+    if (cur.role === 'admin') {
+      try { S.ledger = (await q(sb.from('ledger').select('*').eq('farm_id', fid))).map(r => ({id:r.id, date:r.date, kind:r.kind, category:r.category, amount:Number(r.amount) || 0, gecko_id:r.gecko_id, memo:r.memo || '', src:'manual'})); }
+      catch (e) { S.ledgerErr = errMsg(e); }
+    }
     S.loaded = {g:true, c:true, p:true}; S.conn = 'ok';
     await refreshUrls();
     onRoute();
@@ -277,6 +285,7 @@ async function backup() {
     const out = {app:APP_NAME, exportedAt:new Date().toISOString(), account:S.user && S.user.email, farm:S.farm};
     out.members = S.members.map(m => ({email:m.email, display_name:m.display_name, role:m.role, joined_at:m.joined_at}));
     for (const t of ['geckos', 'clutches', 'pairings']) out[t] = await q(sb.from(t).select('*').eq('farm_id', fid));
+    try { out.ledger = await q(sb.from('ledger').select('*').eq('farm_id', fid)); } catch { out.ledger = []; }
     out.logs = [];
     for (let i = 0; ; i += 1000) { const r = await q(sb.from('logs').select('*').eq('farm_id', fid).order('id').range(i, i + 999)); out.logs.push(...r); if (r.length < 1000) break; }
     downloadBlob(new Blob([JSON.stringify(out, null, 2)], {type:'application/json'}), `크레개체노트_${safeName(S.farm.name)}_백업_${today()}.json`);
@@ -318,7 +327,7 @@ function route() {
   if (h.startsWith('pub-')) return {v:'pub', id:h.slice(4)};
   if (h.startsWith('join-')) return {v:'join', code:h.slice(5)};
   if (h.startsWith('map-')) return {v:'map', id:h.slice(4)};
-  if (['breeding', 'sales', 'setup', 'labels', 'map', 'list'].includes(h)) return {v:h};
+  if (['breeding', 'sales', 'setup', 'labels', 'map', 'list', 'ledger'].includes(h)) return {v:h};
   return {v:'home'};
 }
 function go(h) { if (location.hash.slice(1) === h) render(); else location.hash = h; }
@@ -327,6 +336,7 @@ function schedule() { if (pending) return; pending = true; requestAnimationFrame
 const NEED = {
   'new-gecko':'admin', 'edit-gecko':'admin', 'sale':'admin', 'sale-cancel':'admin', 'new-pair':'admin', 'edit-pair':'admin',
   'new-clutch':'admin', 'edit-clutch':'admin', 'load-samples':'admin', 'clear-samples':'admin', 'backup':'admin',
+  'new-ledger':'admin', 'edit-ledger':'admin', 'ledger-csv':'admin',
   'make-invite':'admin', 'revoke-invite':'admin', 'remove-member':'admin', 'to-ref':'admin',
   'log':'log', 'log-edit':'log', 'bulk':'log', 'bulk-feed':'log', 'feed-over':'log'
 };
@@ -358,6 +368,7 @@ function render() {
   else if (r.v === 'pub') html = vPublic(r.id, true);
   else if (r.v === 'map') html = vMap(r.id);
   else if (r.v === 'home') html = vHome();
+  else if (r.v === 'ledger') html = vLedger();
   else if (r.v === 'breeding') html = vBreeding();
   else if (r.v === 'sales') html = vSales();
   else if (r.v === 'setup') html = vSetup();
@@ -367,7 +378,7 @@ function render() {
   view.classList.toggle('bulking', S.bulk && r.v === 'list');
   view.querySelectorAll('[data-act]').forEach(el => { const n = NEED[el.dataset.act]; if (n && !can(n) && !el.classList.contains('rowbtn') && !el.classList.contains('ck')) el.hidden = true; });
   view.querySelectorAll('.qlog,.actions,.acts').forEach(el => { if (el.children.length && ![...el.children].some(c => !c.hidden)) el.hidden = true; });
-  setTabs(['gecko', 'labels', 'pub', 'sales'].includes(r.v) ? 'list' : r.v);
+  setTabs(['gecko', 'labels', 'pub', 'sales'].includes(r.v) ? 'list' : r.v === 'ledger' ? 'home' : r.v);
   if (r.v === 'gecko' || r.v === 'pub') drawChart();
   if (r.v === 'setup') wireSetup();
   if (r.v === 'map') drawMap();
@@ -619,9 +630,143 @@ function vHome() {
     ${inc.length || hatched.length ? `<div class="incs">${inc.map(incCard).join('')}${hatched.map(hatchCard).join('')}</div>`
       : `<p class="hint">인큐 중인 알이 없어요.${can('admin') ? ' 브리딩에서 산란을 기록하면 여기에서 해칭까지 남은 날을 볼 수 있어요.' : ''}</p>`}</section>`;
 
-  h += `<div class="home-grid"><div class="col2">${check}${fr}</div><div class="col2">${incs}</div></div>
+  h += `<div class="home-grid"><div class="col2">${check}${fr}</div><div class="col2">${incs}${can('admin') ? homeMoney() : ''}</div></div>
     <div class="home-foot"><a class="btn" href="#list">개체 ${act.length}마리 모두 보기</a></div></div>`;
   return h;
+}
+
+/* ---------- ledger (가계부) ---------- */
+const ymdLocal = ms => { const t = new Date(ms); return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`; };
+const won = n => `${Math.round(Number(n) || 0).toLocaleString('ko-KR')}원`;
+const signedWon = (kind, n) => `${kind === 'income' ? '+' : '−'}${won(n)}`;
+function ledgerEntries() {
+  const out = S.ledger.slice();
+  for (const g of S.geckos.values()) {
+    if (gStatus(g) === 'ref') continue;
+    if (g.acquiredPrice > 0) out.push({id:'acq-' + g.id, date:g.acquiredDate || (g.createdAt ? ymdLocal(g.createdAt) : today()), kind:'expense', category:'개체 입양', amount:+g.acquiredPrice, gecko_id:g.id, memo:g.sourceNote || '', src:'acq'});
+    const sp = g.sale && Number(g.sale.price);
+    if (gStatus(g) === 'sold' && sp > 0 && g.sale.date) out.push({id:'sale-' + g.id, date:g.sale.date, kind:'income', category:'분양', amount:sp, gecko_id:g.id, memo:g.sale.to ? `분양받은 분: ${g.sale.to}` : '', src:'sale'});
+  }
+  return out.sort((a, b) => b.date.localeCompare(a.date) || (a.src === 'manual' ? 1 : -1));
+}
+const lpPrefix = P => P.mode === 'year' ? `${P.y}` : `${P.y}-${pad(P.m)}`;
+const lpLabel = P => P.mode === 'year' ? `${P.y}년` : `${P.y}년 ${P.m}월`;
+function sums(list) {
+  let inc = 0, exp = 0;
+  for (const e of list) { if (e.kind === 'income') inc += e.amount; else exp += e.amount; }
+  return {inc, exp, net:inc - exp};
+}
+function geckoLedger(gid, all) {
+  const es = (all || ledgerEntries()).filter(e => e.gecko_id === gid);
+  const acq = es.filter(e => e.src === 'acq').reduce((n, e) => n + e.amount, 0);
+  const care = es.filter(e => e.kind === 'expense' && e.src !== 'acq').reduce((n, e) => n + e.amount, 0);
+  const sale = es.filter(e => e.kind === 'income').reduce((n, e) => n + e.amount, 0);
+  return {acq, care, sale, net:sale - acq - care, count:es.length};
+}
+function ledgerTitle(e) {
+  const g = e.gecko_id ? G(e.gecko_id) : null;
+  return [g ? gLabel(g) : '', e.memo].filter(Boolean).join(' · ') || (e.gecko_id ? '삭제된 개체' : '농장 전체');
+}
+function ledgerRow(e) {
+  const inner = `<span class="ld-d mono">${fmtShort(e.date)}</span><span class="ld-t"><span class="pill${e.kind === 'income' ? ' good' : ''}">${esc(e.category)}</span> ${esc(ledgerTitle(e))}${e.src !== 'manual' ? ' <span class="tag nw">자동</span>' : ''}</span><span class="ld-a ${e.kind}">${signedWon(e.kind, e.amount)}</span>`;
+  return e.src === 'manual'
+    ? `<li><button class="ld-row" data-act="edit-ledger" data-id="${esc(e.id)}">${inner}</button></li>`
+    : `<li><a class="ld-row" href="#g-${esc(e.gecko_id)}">${inner}</a></li>`;
+}
+function vLedger() {
+  if (!S.loaded.g) return loadingHTML();
+  if (!can('admin')) return `<div class="empty"><h2>가계부는 관리자만 볼 수 있습니다</h2><p>농장의 수입·지출 정보라서 관리자 권한이 있어야 열 수 있습니다.</p><a class="btn" href="#home">홈으로</a></div>`;
+  const P = S.lp, all = ledgerEntries(), pre = lpPrefix(P), list = all.filter(e => e.date.startsWith(pre)), t = sums(list);
+  let h = `<a class="back" href="#home">← 홈</a><div class="vhead"><div><h1 class="vtitle">가계부</h1><p class="vsub">입양·분양·관리비를 한곳에 모아 봅니다.</p></div>
+    <div class="actions"><button class="btn primary" data-act="new-ledger" data-kind="expense">+ 지출</button><button class="btn" data-act="new-ledger" data-kind="income">+ 수입</button></div></div>`;
+  if (S.ledgerErr) h += `<div class="notice"><p><b>가계부를 불러오지 못했습니다.</b> ${esc(S.ledgerErr)}</p></div>`;
+  h += `<div class="lbar"><div class="lnav"><button class="icon-btn" data-act="ledger-step" data-d="-1" aria-label="이전">‹</button><b>${lpLabel(P)}</b><button class="icon-btn" data-act="ledger-step" data-d="1" aria-label="다음">›</button></div>
+    <div class="seg">${[['month', '월별'], ['year', '연도별']].map(([v, l]) => `<button data-act="ledger-mode" data-v="${v}" aria-pressed="${P.mode === v}">${l}</button>`).join('')}</div></div>
+  <section class="lkpis" aria-label="${lpLabel(P)} 요약">
+    <div class="stat"><span class="k">수입</span><span class="v pos">${won(t.inc)}</span></div>
+    <div class="stat"><span class="k">지출</span><span class="v">${won(t.exp)}</span></div>
+    <div class="stat"><span class="k">손익</span><span class="v ${t.net >= 0 ? 'pos' : 'bad'}">${t.net >= 0 ? '+' : '−'}${won(Math.abs(t.net))}</span></div>
+  </section>`;
+  let left = '', right = '';
+  // expense by category
+  const cats = new Map();
+  list.filter(e => e.kind === 'expense').forEach(e => cats.set(e.category, (cats.get(e.category) || 0) + e.amount));
+  const catRows = [...cats.entries()].sort((a, b) => b[1] - a[1]);
+  right += `<section class="panel"><div class="ph3"><h3>지출 항목</h3></div>${catRows.length ? `<ul class="lcats">${catRows.map(([c, v]) => { const pct = t.exp ? Math.round(v / t.exp * 100) : 0; return `<li><span class="lc-n">${esc(c)}</span><span class="lc-bar" aria-hidden="true"><span style="width:${Math.max(pct, 2)}%"></span></span><span class="lc-v">${won(v)} <small>${pct}%</small></span></li>`; }).join('')}</ul>` : '<p class="muted">이 기간에 지출이 없습니다.</p>'}</section>`;
+  if (P.mode === 'year') {
+    const rows = [];
+    for (let m = 1; m <= 12; m++) { const pm = `${P.y}-${pad(m)}`, st = sums(all.filter(e => e.date.startsWith(pm))); if (st.inc || st.exp) rows.push([m, st]); }
+    right += `<section class="panel"><div class="ph3"><h3>월별 손익</h3></div>${rows.length ? `<ul class="rows">${rows.map(([m, st]) => `<li><button class="rowbtn" data-act="ledger-month" data-m="${m}"><span class="r1">${m}월</span><span class="r2">수입 ${won(st.inc)} · 지출 ${won(st.exp)}</span><span class="rr"><span class="ld-a ${st.net >= 0 ? 'income' : 'expense'}">${st.net >= 0 ? '+' : '−'}${won(Math.abs(st.net))}</span></span></button></li>`).join('')}</ul>` : '<p class="muted">이 해에 기록이 없습니다.</p>'}</section>`;
+  }
+  // entries
+  left += `<section class="panel"><div class="ph3"><h3>내역</h3><div class="acts"><button class="btn small" data-act="ledger-csv"${list.length ? '' : ' disabled'}>CSV(엑셀) 내려받기</button></div></div>
+    ${list.length ? `<ul class="rows">${list.map(ledgerRow).join('')}</ul>` : `<p class="muted">${lpLabel(P)}에 기록이 없습니다. 위의 <b>+ 지출</b>, <b>+ 수입</b>으로 기록해 보세요.</p>`}
+    <p class="hint">‘자동’ 표시가 붙은 줄은 개체의 입양가(개체 정보 수정)와 분양가(분양 처리)에서 자동으로 들어온 금액입니다. 고치려면 해당 개체에서 바꾸세요.</p></section>`;
+  // per-gecko P&L (all time)
+  const per = [...S.geckos.values()].filter(g => gStatus(g) !== 'ref').map(g => ({g, ...geckoLedger(g.id, all)})).filter(x => x.count).sort((a, b) => b.net - a.net);
+  right += `<section class="panel"><div class="ph3"><h3>개체별 손익 <small class="muted">전체 기간</small></h3></div>${per.length ? `<ul class="rows">${per.slice(0, 30).map(x => `<li><a class="rowbtn" href="#g-${x.g.id}"><span class="r1">${esc(gLabel(x.g))}</span><span class="r2">입양 ${won(x.acq)} · 관리비 ${won(x.care)} · 분양 ${won(x.sale)}</span><span class="rr"><span class="ld-a ${x.net >= 0 ? 'income' : 'expense'}">${x.net >= 0 ? '+' : '−'}${won(Math.abs(x.net))}</span></span></a></li>`).join('')}</ul>` : '<p class="muted">개체와 연결된 금액이 아직 없습니다. 지출을 기록할 때 개체를 고르면 개체별 손익이 계산됩니다.</p>'}</section>`;
+  h += `<div class="cols2"><div class="col" style="display:flex;flex-direction:column;gap:16px">${left}</div><div class="col" style="display:flex;flex-direction:column;gap:16px">${right}</div></div>
+    <p class="hint">가계부는 농장 관리자만 볼 수 있습니다. 개인 기록용이며 세무 신고용 장부를 대신하지 않습니다.</p>`;
+  return h;
+}
+function homeMoney() {
+  const pm = today().slice(0, 7), t = sums(ledgerEntries().filter(e => e.date.startsWith(pm)));
+  return `<section class="home-sec"><div class="sec-h"><h2>이번 달 가계부</h2><a href="#ledger">가계부 열기</a></div>
+    <a class="money" href="#ledger"><span><small>수입</small><b class="pos">${won(t.inc)}</b></span><span><small>지출</small><b>${won(t.exp)}</b></span><span><small>손익</small><b class="${t.net >= 0 ? 'pos' : 'bad'}">${t.net >= 0 ? '+' : '−'}${won(Math.abs(t.net))}</b></span></a></section>`;
+}
+function geckoMoney(g) {
+  const x = geckoLedger(g.id);
+  return `<section class="panel o6"><div class="ph3"><h3>가계부</h3><div class="acts"><button class="btn small" data-act="new-ledger" data-kind="expense" data-gecko="${g.id}">+ 지출 기록</button></div></div>
+    <dl class="facts"><dt>입양가</dt><dd>${x.acq ? won(x.acq) : '—'}</dd><dt>관리비</dt><dd>${won(x.care)}</dd><dt>분양가</dt><dd>${x.sale ? won(x.sale) : '—'}</dd><dt>손익</dt><dd><b class="${x.net >= 0 ? 'pos' : 'bad'}">${x.net >= 0 ? '+' : '−'}${won(Math.abs(x.net))}</b></dd></dl>
+    <a class="hint" href="#ledger">가계부 전체 보기</a></section>`;
+}
+function openLedgerForm(id, pre = {}) {
+  const e = id ? S.ledger.find(x => x.id === id) : {kind:pre.kind || 'expense', date:today(), category:'', amount:'', gecko_id:pre.gecko || '', memo:''};
+  if (!e) return;
+  const cats = k => LCAT[k].map(c => `<option${e.category === c ? ' selected' : ''}>${c}</option>`).join('');
+  const gopts = [...S.geckos.values()].filter(g => gStatus(g) !== 'ref' || g.id === e.gecko_id).sort(byCode)
+    .map(g => `<option value="${g.id}"${e.gecko_id === g.id ? ' selected' : ''}>${esc(gLabel(g))}${gStatus(g) !== 'active' ? ` (${STATUS[gStatus(g)]})` : ''}</option>`).join('');
+  const sh = openSheet(`<form class="form" id="ledform" novalidate>${sheetHead(id ? '가계부 수정' : '가계부 기록')}
+    <div class="field"><span class="lbl">구분</span>${seg('ld-kind', LKIND, e.kind)}</div>
+    <div class="grid2"><div class="field"><label for="ld-date">날짜</label><input id="ld-date" type="date" value="${esc(e.date)}"></div>
+      <div class="field"><label for="ld-amt">금액 (원)</label><input id="ld-amt" inputmode="numeric" autocomplete="off" placeholder="예: 32,000" value="${e.amount ? Number(e.amount).toLocaleString('ko-KR') : ''}"></div></div>
+    <div class="grid2"><div class="field"><label for="ld-cat">항목</label><select id="ld-cat">${cats(e.kind)}</select></div>
+      <div class="field"><label for="ld-g">개체 (선택)</label><select id="ld-g"><option value="">농장 전체</option>${gopts}</select></div></div>
+    <div class="field"><label for="ld-memo">메모</label><input id="ld-memo" value="${esc(e.memo || '')}" autocomplete="off" placeholder="예: CGD 2봉, 동물병원 진료"></div>
+    <p class="hint">개체를 고르면 개체별 손익에 관리비로 들어갑니다. 입양가와 분양가는 개체 정보 수정·분양 처리에서 입력하면 자동으로 들어옵니다.</p>
+    <p class="err" hidden></p>
+    <div class="sh-foot">${id ? '<button type="button" class="btn danger" id="ld-del">삭제</button>' : ''}<span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="ld-save">저장</button></div></form>`, {label:'가계부 기록'});
+  sh.querySelectorAll('input[name=ld-kind]').forEach(r => r.addEventListener('change', () => { const k = sh.querySelector('input[name=ld-kind]:checked').value; e.category = ''; sh.querySelector('#ld-cat').innerHTML = cats(k); }));
+  const amt = sh.querySelector('#ld-amt');
+  amt.addEventListener('input', () => { const d = amt.value.replace(/[^0-9]/g, ''); amt.value = d ? parseInt(d, 10).toLocaleString('ko-KR') : ''; });
+  sh.querySelector('#ledform').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const kind = (sh.querySelector('input[name=ld-kind]:checked') || {}).value || 'expense';
+    const date = fval(sh, 'ld-date'), amount = parseInt(amt.value.replace(/[^0-9]/g, '') || '0', 10);
+    if (!date) return showErr(sh, '날짜를 입력해 주세요.');
+    if (!(amount > 0)) return showErr(sh, '금액을 원 단위 숫자로 입력해 주세요.');
+    const row = {date, kind, amount, category:fval(sh, 'ld-cat') || LCAT[kind][0], gecko_id:fval(sh, 'ld-g') || null, memo:fval(sh, 'ld-memo'), updated_at:new Date().toISOString()};
+    const btn = sh.querySelector('#ld-save'); busy(btn, true);
+    try {
+      if (id) await q(sb.from('ledger').update(row).eq('id', id)); else await q(sb.from('ledger').insert({id:rid(), farm_id:S.farm.id, ...row}));
+      closeSheet(); toast('가계부에 기록했습니다');
+      const [y, m] = date.split('-').map(Number); if (S.lp.mode === 'month') { S.lp.y = y; S.lp.m = m; } else S.lp.y = y;
+      await refresh();
+    } catch (err) { busy(btn, false); showErr(sh, errMsg(err)); }
+  });
+  const del = sh.querySelector('#ld-del');
+  if (del) del.addEventListener('click', async () => {
+    if (!await confirmSheet('이 기록을 삭제할까요?', `${fmtD(e.date)} ${esc(e.category)} ${won(e.amount)}`, '삭제', true)) return;
+    try { await q(sb.from('ledger').delete().eq('id', id)); closeSheet(); toast('삭제했습니다'); await refresh(); } catch (err) { showErr(sh, errMsg(err)); }
+  });
+}
+function ledgerCsv() {
+  const P = S.lp, list = ledgerEntries().filter(e => e.date.startsWith(lpPrefix(P))).sort((a, b) => a.date.localeCompare(b.date));
+  const cell = v => { const t = String(v ?? ''); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const lines = [['날짜', '구분', '항목', '금액', '개체', '메모', '출처'].join(',')];
+  for (const e of list) { const g = e.gecko_id ? G(e.gecko_id) : null; lines.push([e.date, LKIND[e.kind], e.category, e.kind === 'income' ? e.amount : -e.amount, g ? gLabel(g) : '', e.memo, e.src === 'manual' ? '직접 입력' : e.src === 'acq' ? '입양가' : '분양가'].map(cell).join(',')); }
+  const t = sums(list); lines.push(''); lines.push(['합계', '', '수입', t.inc].join(',')); lines.push(['', '', '지출', -t.exp].join(',')); lines.push(['', '', '손익', t.net].join(','));
+  downloadBlob(new Blob(['﻿' + lines.join('\r\n')], {type:'text/csv;charset=utf-8'}), `가계부_${safeName(S.farm.name)}_${lpPrefix(P)}.csv`);
 }
 
 /* ---------- list ---------- */
@@ -739,9 +884,10 @@ function vGecko(id) {
   const tlPanel = timeline(g, loaded);
   const notesPanel = g.notes ? `<section class="panel o5"><div class="ph3"><h3>메모</h3></div><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(g.notes)}</p></section>` : '';
   const salePanel = st === 'sold' ? salePanelHTML(g) : '';
+  const moneyPanel = can('admin') && st !== 'ref' ? geckoMoney(g) : '';
   h += st === 'ref'
     ? `<div class="dgrid"><div class="col">${pedPanel}</div><div class="col">${breedPanel}${notesPanel}</div></div>`
-    : `<div class="dgrid"><div class="col">${chartPanel}${tlPanel}</div><div class="col">${pedPanel}${breedPanel}${notesPanel}${salePanel}</div></div>`;
+    : `<div class="dgrid"><div class="col">${chartPanel}${tlPanel}</div><div class="col">${pedPanel}${breedPanel}${notesPanel}${salePanel}${moneyPanel}</div></div>`;
   return h;
 }
 const stat = (k, v, s, bad) => `<div class="stat"><span class="k">${k}</span><span class="v${bad ? ' bad' : ''}">${esc(v)}</span><span class="s">${esc(s)}</span></div>`;
@@ -994,7 +1140,7 @@ function vSetup() {
       <div class="ph3"><h3>농장과 브랜드</h3></div>
       <div class="field"><label for="s-name">농장 이름</label><input id="s-name" value="${esc(f.name)}" autocomplete="off"><p class="hint">공개 카드에 ‘브리더’로 표시됩니다.</p></div>
       <div class="photo-pick"><div class="pp-prev logo" id="s-logo-prev">${logo ? `<img src="${esc(logo)}" alt="">` : '<span>로고 없음</span>'}</div>
-        <div class="pp-ctl"><span class="lbl">브랜드 로고</span><div class="actions"><label class="btn small" for="s-logo">${logo ? '로고 바꾸기' : '로고 올리기'}</label>${logo ? '<button type="button" class="btn small" id="s-logo-del">로고 빼기</button>' : ''}</div><input id="s-logo" type="file" accept="image/*" hidden><p class="hint" id="s-logo-st">정사각형에 가까운 이미지가 잘 어울립니다.</p></div></div>
+        <div class="pp-ctl"><span class="lbl">브랜드 로고</span><div class="actions"><label class="btn small" for="s-logo">${logo ? '로고 바꾸기' : '로고 올리기'}</label>${logo ? '<button type="button" class="btn small" id="s-logo-del">로고 빼기</button>' : ''}</div><input id="s-logo" type="file" accept="image/*" hidden><p class="hint" id="s-logo-st">원 안에 꽉 차게 보여 줍니다. 정사각형이나 원형 로고가 잘 어울리고, 네모난 로고는 모서리가 잘릴 수 있습니다.</p></div></div>
       <div class="field"><span class="lbl">사진이 없는 개체에 보여 줄 이미지</span>
         <div class="seg radio">${[['logo', '브랜드 로고'], ['google', '내 구글 프로필'], ['default', '기본 게코 그림']].map(([k, t]) => `<label><input type="radio" name="s-ph" value="${k}"${(f.placeholder || 'logo') === k ? ' checked' : ''}${k === 'google' && !gAvatar ? ' disabled' : ''}><span>${t}</span></label>`).join('')}</div>
         <p class="hint">로고를 고르고 로고를 올리지 않았다면 기본 게코 그림이 나옵니다. 어느 경우든 ‘사진 없음’ 표시가 함께 붙습니다.</p></div>
@@ -1039,7 +1185,7 @@ function vSetup() {
     <p class="hint">나가면 이 농장의 개체를 더 이상 볼 수 없습니다. 농장에는 관리자가 최소 한 명 있어야 합니다.</p></section>`;
   if (admin) h += `<section class="panel"><div class="ph3"><h3>백업</h3></div>
     <p class="hint">이 농장의 개체·기록·산란·메이팅·설정을 파일 하나(JSON)로 내려받습니다. 사진 파일은 포함되지 않습니다. 가끔 한 번씩 받아 두면 안심입니다.</p>
-    <div class="actions"><button class="btn" data-act="backup">전체 데이터 백업 내려받기</button>${sampleN ? `<button class="btn danger" data-act="clear-samples">예시 개체 ${sampleN}마리 지우기</button>` : ''}</div></section>`;
+    <div class="actions"><a class="btn" href="#ledger">가계부 열기</a><button class="btn" data-act="backup">전체 데이터 백업 내려받기</button>${sampleN ? `<button class="btn danger" data-act="clear-samples">예시 개체 ${sampleN}마리 지우기</button>` : ''}</div></section>`;
   h += `<section class="panel"><div class="ph3"><h3>계정</h3></div>
     <dl class="facts"><dt>로그인</dt><dd>${esc((S.user && S.user.email) || '—')}</dd><dt>QR 주소</dt><dd class="mono" style="font-size:13px">${esc(appUrl())}</dd></dl>
     <div class="actions"><a class="btn" href="#labels">QR 라벨 만들기</a><button class="btn" data-act="logout">로그아웃</button></div></section>`;
@@ -1232,7 +1378,8 @@ function openGeckoForm(id, pre = {}) {
       <p class="hint" id="f-hatch-u"${hatchMode(v) === 'unknown' ? '' : ' hidden'}>택 분실 등으로 해칭일을 모를 때 고릅니다. 나이는 표시되지 않습니다.</p></div>
     <div class="grid2"><div class="field"><label for="f-acq">입양일</label><input id="f-acq" type="date" value="${esc(v.acquiredDate || '')}"></div>
       <div class="field"><label for="f-src">출처</label><select id="f-src">${Object.entries(SRC).map(([k, t]) => `<option value="${k}"${(v.source || 'buy') === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
-    <div class="field"><label for="f-srcn">입양처 · 비고</label><input id="f-srcn" value="${esc(v.sourceNote || '')}" autocomplete="off"></div>
+    <div class="grid2"><div class="field"><label for="f-srcn">입양처 · 비고</label><input id="f-srcn" value="${esc(v.sourceNote || '')}" autocomplete="off"></div>
+      ${isRef ? '' : `<div class="field"><label for="f-price">입양가 (원)</label><input id="f-price" inputmode="numeric" autocomplete="off" placeholder="선택" value="${v.acquiredPrice ? Number(v.acquiredPrice).toLocaleString('ko-KR') : ''}"><p class="hint">가계부에 ‘개체 입양’ 지출로 들어갑니다.</p></div>`}</div>
     <fieldset class="fs"><legend>혈통 (부모)</legend>${parentField('sire')}${parentField('dam')}<p class="hint">목록에 있는 개체를 고르면 조부모까지 혈통도가 이어집니다.</p></fieldset>
     ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS_OPT).map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label for="f-notes">메모</label><textarea id="f-notes" rows="3">${esc(v.notes || '')}</textarea></div>
@@ -1309,6 +1456,11 @@ function openGeckoForm(id, pre = {}) {
       public_fields:pd.checked ? null : Object.fromEntries(PUBF.map(([k]) => [k, !!sh.querySelector(`input[name=pf][value=${k}]`).checked]))
     };
     if (row.hatch_mode === 'approx' && !row.hatch_date) return showErr(sh, '대략적인 해칭일을 골라 주세요. 모르면 ‘알 수 없음’을 고르세요.');
+    const priceIn = sh.querySelector('#f-price');
+    if (priceIn) {
+      const pv = priceIn.value.replace(/[^0-9]/g, ''), price = pv ? parseInt(pv, 10) : null;
+      if (price != null || (v.acquiredPrice != null)) row.acquired_price = price;
+    }
     if (!row.code && !row.name) return showErr(sh, '개체번호나 이름 중 하나는 입력해 주세요.');
     if (row.code) { const dup = [...S.geckos.values()].find(x => x.id !== id && (x.code || '').toLowerCase() === row.code.toLowerCase()); if (dup) return showErr(sh, `개체번호 ${row.code}는 이미 ${gTitle(dup)}에게 쓰이고 있습니다.`); }
     if (row.sire_id && row.sire_id === row.dam_id) return showErr(sh, '부와 모가 같은 개체입니다.');
@@ -1739,7 +1891,7 @@ function mmNode(n, idx) {
     s = `<rect class="mn-box" width="${w}" height="${h}" rx="12"/>
       <circle class="mn-av" cx="27" cy="${cy}" r="18"/>`;
     if (u) s += `<clipPath id="mmc${idx}"><circle cx="27" cy="${cy}" r="18"/></clipPath><image href="${esc(u)}" x="9" y="${cy - 18}" width="36" height="36" preserveAspectRatio="xMidYMid slice" clip-path="url(#mmc${idx})"/>`;
-    else if (fb) s += `<clipPath id="mmc${idx}"><circle cx="27" cy="${cy}" r="18"/></clipPath><image href="${esc(fb)}" x="13" y="${cy - 14}" width="28" height="28" preserveAspectRatio="xMidYMid meet" clip-path="url(#mmc${idx})" opacity=".85"/>`;
+    else if (fb) s += `<clipPath id="mmc${idx}"><circle cx="27" cy="${cy}" r="18"/></clipPath><image href="${esc(fb)}" x="9" y="${cy - 18}" width="36" height="36" preserveAspectRatio="xMidYMid slice" clip-path="url(#mmc${idx})"/>`;
     else s += `<text class="mn-ini" x="27" y="${cy + 3.5}" text-anchor="middle">${esc((g.code || g.name || '?').slice(-3))}</text>`;
     s += `<circle class="mn-ring r-${sx.c}" cx="27" cy="${cy}" r="18"/>
       <text class="mn-c" x="54" y="${cy - 9}">${esc(clip(g.code || '번호 없음', `500 11px "IBM Plex Mono", monospace`, w - 70 - roleW))}<tspan class="${SEXFILL[sx.c]}" dx="5">${sx.s}</tspan></text>
@@ -1906,6 +2058,12 @@ const ACT = {
   'logout': async () => { if (!await confirmSheet('로그아웃할까요?', '이 기기에서만 로그아웃합니다. 데이터는 그대로 남습니다.', '로그아웃')) return; await sb.auth.signOut(); location.hash = 'list'; },
   'retry': () => { S.conn = 'ok'; S.loaded = {g:false, c:false, p:false}; render(); refresh(); },
   'backup': () => backup(),
+  'new-ledger': t => openLedgerForm(null, {kind:t.dataset.kind || 'expense', gecko:t.dataset.gecko || ''}),
+  'edit-ledger': t => openLedgerForm(t.dataset.id),
+  'ledger-step': t => { const P = S.lp, d = +t.dataset.d; if (P.mode === 'year') P.y += d; else { P.m += d; if (P.m < 1) { P.m = 12; P.y--; } if (P.m > 12) { P.m = 1; P.y++; } } render(); },
+  'ledger-mode': t => { S.lp.mode = t.dataset.v; render(); },
+  'ledger-month': t => { S.lp.mode = 'month'; S.lp.m = +t.dataset.m; render(); },
+  'ledger-csv': () => ledgerCsv(),
   'load-samples': async t => { busy(t, true, '넣는 중…'); try { await insertSamples(); toast('예시 3마리를 넣었습니다'); } catch (e) { toast(errMsg(e), 'bad'); render(); } },
   'new-gecko': () => openGeckoForm(null),
   'edit-gecko': t => openGeckoForm(t.dataset.id),

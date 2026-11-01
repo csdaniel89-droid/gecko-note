@@ -1,4 +1,4 @@
--- 게코 관리노트 · Supabase 데이터베이스 구조 (2.2판: 농장·구성원·공개 카드·혈관리용 개체·급여 요일)
+-- 게코 관리노트 · Supabase 데이터베이스 구조 (2.3판: 농장·구성원·공개 카드·혈관리용 개체·급여 요일·가계부)
 -- Supabase 관리 화면 → SQL Editor → New query 에 이 파일 전체를 붙여 넣고 Run 을 누르세요.
 -- 처음 설치할 때도, 1판에서 올릴 때도 같은 파일을 쓰면 됩니다. 여러 번 실행해도 안전합니다.
 -- 1판에서 올리면 기존 개체·기록·산란·메이팅·설정이 '내 농장'으로 자동으로 옮겨집니다.
@@ -441,6 +441,32 @@ grant execute on function public.public_gecko(text, boolean) to anon, authentica
 grant execute on function public.invite_info(text)            to anon, authenticated;
 grant execute on function public.create_farm(text)            to authenticated;
 grant execute on function public.accept_invite(text)          to authenticated;
+
+------------------------------------------------------------------------------
+-- 8-1) 가계부 (2.3판): 지출·수입 내역. 농장 관리자만 보고 쓸 수 있음
+--      개체의 입양가(geckos.acquired_price)와 분양가(geckos.sale.price)는 앱이 가계부에 자동으로 함께 보여 줍니다
+------------------------------------------------------------------------------
+alter table public.geckos add column if not exists acquired_price bigint check (acquired_price is null or acquired_price >= 0);
+
+create table if not exists public.ledger (
+  id         text primary key,
+  farm_id    text not null references public.farms (id) on delete cascade,
+  owner_id   uuid default auth.uid() references auth.users (id) on delete set null,
+  date       date not null,
+  kind       text not null check (kind in ('expense', 'income')),
+  category   text not null,
+  amount     bigint not null check (amount >= 0),
+  gecko_id   text references public.geckos (id) on delete set null,
+  memo       text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists ledger_farm_date on public.ledger (farm_id, date desc);
+
+alter table public.ledger enable row level security;
+drop policy if exists "ledger: admins" on public.ledger;
+create policy "ledger: admins" on public.ledger for all to authenticated
+  using (public.farm_role(farm_id) = 'admin') with check (public.farm_role(farm_id) = 'admin');
 
 ------------------------------------------------------------------------------
 -- 9) 사진 저장소
