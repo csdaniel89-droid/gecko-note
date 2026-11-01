@@ -35,7 +35,9 @@ const PUBF = [
   ['care', '급여·탈피·배변 기록'], ['sale', '분양일·분양가'], ['buyer', '분양받은 분 이름'], ['notes', '메모']
 ];
 const PUB_DEF = { hatch:true, lineage:true, breeder:true, weight:false, care:false, sale:false, buyer:false, notes:false };
-const FOOT = '<svg class="foot" viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><ellipse cx="12" cy="15.6" rx="3.9" ry="3.4"/><circle cx="4.4" cy="11.6" r="1.7"/><circle cx="7.2" cy="6.4" r="1.7"/><circle cx="12" cy="4.6" r="1.7"/><circle cx="16.8" cy="6.4" r="1.7"/><circle cx="19.6" cy="11.6" r="1.7"/></g><path d="M12 15.6 4.4 11.6M12 15.6 7.2 6.4M12 15.6V4.6M12 15.6l4.8-9.2M12 15.6l7.6-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>';
+const FOOT = '<svg class="foot" viewBox="0 0 64 64" aria-hidden="true"><g fill="currentColor"><ellipse cx="32" cy="18" rx="7" ry="8"/><ellipse cx="32" cy="33" rx="8.5" ry="11.5"/><path d="M30 43c-1 8 3 13 11 16-4-4-6-9-5.5-16z"/><circle cx="17" cy="22" r="2.6"/><circle cx="47" cy="22" r="2.6"/><circle cx="17" cy="46" r="2.6"/><circle cx="47" cy="46" r="2.6"/></g><path d="M26 27l-8-4M38 27l8-4M26 39l-8 6M38 39l8 6" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" fill="none"/></svg>';
+const EGG = '<svg width="22" height="26" viewBox="0 0 24 28" aria-hidden="true"><path d="M12 2C17 2 21 10.5 21 17a9 9 0 0 1-18 0C3 10.5 7 2 12 2z" fill="#FFFDF6" stroke="var(--edge)" stroke-width="2"/></svg>';
+const tone = g => { let h = 0; const k = String((g && (g.id || g.code)) || ''); for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0; return 't' + (h % 5); };
 const QICON = {
   weight:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14l-1.6-10.5H6.6z"/><circle cx="12" cy="6" r="2.2"/></svg>',
   feed:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 11.5h17a8.5 8.5 0 0 1-17 0z"/><path d="M9 8.5c0-2 2-2 2-4.5M14 8.5c0-2 2-2 2-4.5"/></svg>',
@@ -171,7 +173,7 @@ function photoTag(g, cls = 'thumb') {
   if (u) return `<span class="${cls}"><img data-ph src="${esc(u)}" alt="" loading="lazy"></span>`;
   const fb = fallbackFor(g);
   if (fb) return `<span class="${cls} fb" title="사진 없음"><img data-ph src="${esc(fb)}" alt="" loading="lazy"></span>`;
-  return `<span class="${cls} def" title="사진 없음">${FOOT}</span>`;
+  return `<span class="${cls} def ${tone(g)}" title="사진 없음">${FOOT}</span>`;
 }
 
 /* ---------- server (Supabase) ---------- */
@@ -316,8 +318,8 @@ function route() {
   if (h.startsWith('pub-')) return {v:'pub', id:h.slice(4)};
   if (h.startsWith('join-')) return {v:'join', code:h.slice(5)};
   if (h.startsWith('map-')) return {v:'map', id:h.slice(4)};
-  if (['breeding', 'sales', 'setup', 'labels', 'map'].includes(h)) return {v:h};
-  return {v:'list'};
+  if (['breeding', 'sales', 'setup', 'labels', 'map', 'list'].includes(h)) return {v:h};
+  return {v:'home'};
 }
 function go(h) { if (location.hash.slice(1) === h) render(); else location.hash = h; }
 let pending = false;
@@ -337,6 +339,8 @@ function render() {
   if (bm) bm.textContent = own ? S.farm.name : APP_NAME;
   if (bs) bs.textContent = own ? '관리노트' : 'Correlophus ciliatus';
   document.title = own ? `${S.farm.name} 관리노트` : APP_NAME;
+  const av = $('.brand-av'), logo = own && S.farm.logo_path ? S.urls.get(S.farm.logo_path) : '';
+  if (av && av.dataset.k !== (logo || 'g')) { av.dataset.k = logo || 'g'; av.innerHTML = logo ? `<img src="${esc(logo)}" alt="">` : FOOT; }
   view.classList.remove('bulking');
   S.chartData = null;
   if (!signedIn) {
@@ -353,6 +357,7 @@ function render() {
   if (r.v === 'gecko') html = G(r.id) ? vGecko(r.id) : vPublic(r.id, false);
   else if (r.v === 'pub') html = vPublic(r.id, true);
   else if (r.v === 'map') html = vMap(r.id);
+  else if (r.v === 'home') html = vHome();
   else if (r.v === 'breeding') html = vBreeding();
   else if (r.v === 'sales') html = vSales();
   else if (r.v === 'setup') html = vSetup();
@@ -360,9 +365,9 @@ function render() {
   else html = vList();
   view.innerHTML = html;
   view.classList.toggle('bulking', S.bulk && r.v === 'list');
-  view.querySelectorAll('[data-act]').forEach(el => { const n = NEED[el.dataset.act]; if (n && !can(n) && !el.classList.contains('rowbtn')) el.hidden = true; });
+  view.querySelectorAll('[data-act]').forEach(el => { const n = NEED[el.dataset.act]; if (n && !can(n) && !el.classList.contains('rowbtn') && !el.classList.contains('ck')) el.hidden = true; });
   view.querySelectorAll('.qlog,.actions,.acts').forEach(el => { if (el.children.length && ![...el.children].some(c => !c.hidden)) el.hidden = true; });
-  setTabs(r.v === 'gecko' || r.v === 'labels' || r.v === 'pub' ? 'list' : r.v);
+  setTabs(['gecko', 'labels', 'pub', 'sales'].includes(r.v) ? 'list' : r.v);
   if (r.v === 'gecko' || r.v === 'pub') drawChart();
   if (r.v === 'setup') wireSetup();
   if (r.v === 'map') drawMap();
@@ -421,7 +426,7 @@ function vPublic(id, preview) {
   const sx = SEX[pg.sex] || SEX.u;
   const real = photoUrl(pg);
   const photo = real ? `<img class="hero-photo" data-ph src="${esc(real)}" alt="${esc(gTitle(pg))} 사진">`
-    : `<div class="hero-photo ph-empty${fb ? ' has-fb' : ''}">${fb ? `<img data-ph src="${esc(fb)}" alt="" referrerpolicy="no-referrer">` : FOOT}<span class="ph-tag">사진 없음</span></div>`;
+    : `<div class="hero-photo ph-empty ${tone(pg)}${fb ? ' has-fb' : ''}">${fb ? `<img data-ph src="${esc(fb)}" alt="" referrerpolicy="no-referrer">` : FOOT}<span class="ph-tag">사진 없음</span></div>`;
   document.title = `${[pg.code, pg.name].filter(Boolean).join(' ') || gTitle(pg)} · 공개 카드`;
   let h = `${top}${other}<article class="pcard">`;
   if (farm) {
@@ -517,7 +522,7 @@ function wireOnboard() {
 }
 async function createFarm(name) {
   const fid = await q(sb.rpc('create_farm', {fname:name || '내 농장'}));
-  lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('list'); toast('농장을 만들었습니다');
+  lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('home'); toast('농장을 만들었습니다');
 }
 function resetFarmView() {
   S.loaded = {g:false, c:false, p:false}; S.logGid = null; S.logs = []; S.bulk = false; S.sel.clear();
@@ -525,6 +530,98 @@ function resetFarmView() {
 }
 async function switchFarm(fid, goTo) {
   lsSet('gk.farm', fid); resetFarmView(); render(); await loadAll(); if (goTo) go(goTo); else render();
+}
+
+/* ---------- home ---------- */
+const CHEV = '<svg class="go" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+const SVG_FEED = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3.5 11.5h17a8.5 8.5 0 0 1-17 0z"/><path d="M9 8.5c0-2 2-2 2-4.5M14 8.5c0-2 2-2 2-4.5"/></svg>';
+const SVG_SCALE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20h14l-1.6-10.5H6.6z"/><circle cx="12" cy="6" r="2.2"/></svg>';
+const SVG_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+const daysUntil = s => s ? -daysSince(s) : null;
+function nextFarmFeedDay() {
+  const d = S.settings.feedDays;
+  if (S.settings.feedMode !== 'weekdays' || !d || !d.length) return null;
+  for (let i = 1; i <= 7; i++) { const x = addDays(today(), i); if (d.includes(wdOf(x))) return x; }
+  return null;
+}
+function incInfo(c) {
+  const start = c.incubStart || c.laidAt, el = start ? daysSince(start) : null, left = c.expectAt ? daysUntil(c.expectAt) : null;
+  let pct = null;
+  if (start && c.expectAt) { const tot = dnum(c.expectAt) - dnum(start); pct = tot > 0 ? Math.max(0, Math.min(100, Math.round(el / tot * 100))) : 100; }
+  return {el, left, pct, fertile:Math.max(0, (+c.eggs || 0) - (+c.infertile || 0))};
+}
+const namesOf = (list, n = 3) => list.slice(0, n).map(g => g.name || g.code || gTitle(g)).join(', ') + (list.length > n ? ` 외 ${list.length - n}마리` : '');
+function incCard(c) {
+  const ii = incInfo(c), late = ii.left != null && ii.left < 0;
+  const dd = ii.left == null ? '' : ii.left > 0 ? `D-${ii.left}` : ii.left === 0 ? '오늘' : `+${-ii.left}일`;
+  const inner = `<span class="egg">${EGG}</span><span class="ib"><span class="it">${esc(refName(c.damId))} × ${esc(refName(c.sireId, c.sireExt, c.sireNone))}</span>
+    ${ii.pct != null ? `<span class="bar" role="img" aria-label="예상 해칭까지 ${ii.pct}% 진행"><span class="${late ? 'late' : ''}" style="width:${ii.pct}%"></span></span>` : ''}
+    <span class="is">알 ${+c.eggs || 0}개 · 유정란 ${ii.fertile} · 인큐 D+${ii.el ?? '?'}${c.expectAt ? ` · 예상 해칭 ${fmtShort(c.expectAt)}` : ' · 예상 해칭일 미입력'}</span></span>${dd ? `<span class="dd${late ? ' late' : ''}">${dd}</span>` : ''}`;
+  return can('admin') ? `<button class="inc" data-act="edit-clutch" data-id="${c.id}">${inner}</button>` : `<a class="inc" href="#breeding">${inner}</a>`;
+}
+function hatchCard(c) {
+  const kids = (c.hatchedIds || []).map(G).filter(Boolean);
+  return `<a class="inc hatched" href="${kids.length === 1 ? '#g-' + kids[0].id : '#breeding'}"><span class="egg">${SVG_OK}</span><span class="ib"><span class="it">해칭 완료 · ${esc(refName(c.damId))} × ${esc(refName(c.sireId, c.sireExt, c.sireNone))}</span>
+    <span class="is">${fmtShort(c.hatchAt)} 해칭 · ${kids.length ? `${esc(namesOf(kids))} 등록` : '해칭 개체를 아직 등록하지 않았어요'}</span></span></a>`;
+}
+function vHome() {
+  if (!S.loaded.g || !S.loaded.c) return loadingHTML();
+  const all = [...S.geckos.values()], td = today(), [, m, d] = td.split('-').map(Number);
+  const wdMode = S.settings.feedMode === 'weekdays' && S.settings.feedDays.length;
+  const feedDay = wdMode && S.settings.feedDays.includes(wdOf(td)), nx = nextFarmFeedDay();
+  const greet = wdMode ? (feedDay ? '급여하는 날이에요' : nx ? `다음 급여일은 ${WD[wdOf(nx)]}요일이에요` : '') : '';
+  let h = `<div class="home"><div class="hello"><span>${m}월 ${d}일 ${WD[wdOf(td)]}요일${greet ? ', ' + greet : ''}</span><h1>${esc(S.farm.name)}</h1></div>`;
+  if (!all.length) {
+    return h + `<div class="empty"><h2>첫 개체를 등록해 보세요</h2><p>개체번호, 모프, 성별, 해칭일, 사진, 부모를 입력하면 이곳에 급여할 개체와 인큐베이터 소식이 모입니다.</p>
+      <div class="actions"><button class="btn primary" data-act="new-gecko">+ 개체 등록</button><button class="btn" data-act="load-samples">예시 3마리 넣어 보기</button></div>
+      <p class="hint">예시는 화면을 둘러보는 용도이며, 설정에서 언제든 지울 수 있습니다.</p></div></div>`;
+  }
+  if (all.some(g => g.sample)) h += `<div class="notice"><p><b>예시 개체가 들어 있습니다.</b> 내 개체를 등록한 뒤 지우면 됩니다.</p><button class="btn small" data-act="clear-samples">예시 지우기</button></div>`;
+  const act = activeGeckos(), fi = new Map(act.map(g => [g.id, feedInfo(g)]));
+  const byOld = (a, b) => (fi.get(b.id).days ?? 1e9) - (fi.get(a.id).days ?? 1e9);
+  const missed = act.filter(g => fi.get(g.id).state === 'missed').sort(byOld);
+  const due = act.filter(g => fi.get(g.id).state === 'today').sort(byCode);
+  const done = act.filter(g => fi.get(g.id).state === 'done');
+  const total = missed.length + due.length + done.length;
+  const inc = [...S.clutches.values()].filter(c => (c.status || 'incubating') === 'incubating')
+    .sort((a, b) => (a.expectAt || '9999').localeCompare(b.expectAt || '9999') || (a.laidAt || '').localeCompare(b.laidAt || ''));
+  const hatched = [...S.clutches.values()].filter(c => c.status === 'hatched' && c.hatchAt && daysSince(c.hatchAt) >= 0 && daysSince(c.hatchAt) <= 14)
+    .sort((a, b) => b.hatchAt.localeCompare(a.hatchAt));
+  const soon = inc.filter(c => c.expectAt && daysUntil(c.expectAt) <= 14);
+  const stale = act.filter(g => !g.last.weight || daysSince(g.last.weight.d) >= 30);
+
+  let ck = '';
+  if (missed.length === 1) {
+    const g = missed[0], f = fi.get(g.id);
+    ck += `<a class="ck miss" href="#g-${g.id}"><span class="ic">!</span><span class="tx"><b>${esc(g.name || g.code || gTitle(g))}</b> 급여를 놓쳤어요 <span class="miss-n">(${f.days == null ? '기록 없음' : f.days + '일째'})</span></span>${CHEV}</a>`;
+  } else if (missed.length > 1) {
+    ck += `<div class="ck miss"><span class="ic">!</span><span class="tx"><b>급여 놓침 ${missed.length}마리</b><small>${esc(namesOf(missed, 4))}</small></span></div>`;
+  }
+  if (due.length) ck += `<button class="ck feed" data-act="feed-over"><span class="ic">${SVG_FEED}</span><span class="tx">급여할 개체 <b>${due.length}마리</b> 남았어요<small>${esc(namesOf(due))} · 눌러서 한 번에 기록</small></span>${CHEV}</button>`;
+  else if (!missed.length && done.length) ck += `<div class="ck ok"><span class="ic">${SVG_OK}</span><span class="tx">오늘 급여를 모두 기록했어요<small>${done.length}마리</small></span></div>`;
+  for (const c of soon) {
+    const ii = incInfo(c);
+    ck += `<a class="ck egg" href="#breeding"><span class="ic">${EGG}</span><span class="tx">${ii.left >= 0 ? `알 ${+c.eggs || 0}개, 해칭까지 <b>${ii.left === 0 ? '오늘' : ii.left + '일'}</b>` : `예상 해칭일이 <b>${-ii.left}일</b> 지났어요`}<small>${esc(refName(c.damId))} × ${esc(refName(c.sireId, c.sireExt, c.sireNone))}</small></span>${CHEV}</a>`;
+  }
+  if (stale.length) ck += `<a class="ck scale" href="#list"><span class="ic">${SVG_SCALE}</span><span class="tx">몸무게 기록이 30일 넘은 개체 <b>${stale.length}마리</b><small>${esc(namesOf(stale))}</small></span>${CHEV}</a>`;
+  if (!ck) ck = `<div class="ck ok"><span class="ic">${SVG_OK}</span><span class="tx">지금 확인할 일이 없어요</span></div>`;
+  const check = `<section class="panel pop" aria-label="Check"><div class="check-h"><h2>Check</h2>${total ? `<span class="ck-badge">${done.length} / ${total} 완료</span>` : ''}</div><div class="cks">${ck}</div>
+    ${!wdMode && can('admin') ? '<p class="hint">설정에서 급여 요일을 정하면 급여일마다 여기에서 알려 드려요.</p>' : ''}</section>`;
+
+  const friends = [...missed, ...due];
+  const fr = friends.length ? `<section class="home-sec"><div class="sec-h"><h2>밥 줄 친구들</h2><button class="btn small sun" data-act="feed-over">모두 줬어요</button></div>
+    <div class="friends">${friends.slice(0, 12).map(g => {
+      const f = fi.get(g.id), miss = f.state === 'missed', sx = SEX[g.sex || 'u'];
+      return `<a class="friend" href="#g-${g.id}">${photoTag(g)}<span class="fn">${esc(g.name || g.code || gTitle(g))} <span class="sex ${sx.c}">${sx.s}</span></span><span class="fs2${miss ? ' miss' : ''}">${f.days == null ? '기록 없음' : miss ? `놓침 · ${f.days}일째` : f.days === 0 ? '오늘 먹음' : `${f.days}일 전에 먹음`}</span></a>`;
+    }).join('')}</div>${friends.length > 12 ? `<a class="hint" href="#list">외 ${friends.length - 12}마리 더 보기</a>` : ''}</section>` : '';
+
+  const incs = `<section class="home-sec"><div class="sec-h"><h2>인큐베이터</h2><a href="#breeding">브리딩 보기</a></div>
+    ${inc.length || hatched.length ? `<div class="incs">${inc.map(incCard).join('')}${hatched.map(hatchCard).join('')}</div>`
+      : `<p class="hint">인큐 중인 알이 없어요.${can('admin') ? ' 브리딩에서 산란을 기록하면 여기에서 해칭까지 남은 날을 볼 수 있어요.' : ''}</p>`}</section>`;
+
+  h += `<div class="home-grid"><div class="col2">${check}${fr}</div><div class="col2">${incs}</div></div>
+    <div class="home-foot"><a class="btn" href="#list">개체 ${act.length}마리 모두 보기</a></div></div>`;
+  return h;
 }
 
 /* ---------- list ---------- */
@@ -537,22 +634,9 @@ function vList() {
   if (S.sexFilter !== 'all') arr = arr.filter(g => sexGroup(g.sex) === S.sexFilter);
   if (S.q) arr = arr.filter(matchQ);
   arr.sort(sorter(S.sort));
-  const byOld = (a, b) => (feedInfo(b).days ?? 1e9) - (feedInfo(a).days ?? 1e9);
-  const act = activeGeckos(), missed = act.filter(g => feedInfo(g).state === 'missed').sort(byOld), dueToday = act.filter(g => feedInfo(g).state === 'today').sort(byCode);
-  const doneToday = act.filter(g => feedInfo(g).state === 'done' && feedInfo(g).sched.mode === 'weekdays').length;
-  const over = [...missed, ...dueToday];
   let h = '';
   if (all.some(g => g.sample)) h += `<div class="notice"><p><b>예시 개체가 들어 있습니다.</b> 화면을 둘러보는 용도입니다. 내 개체를 등록한 뒤 지우면 됩니다.</p><button class="btn small" data-act="clear-samples">예시 지우기</button></div>`;
-  if ((over.length || doneToday) && !S.q && !S.bulk) {
-    const chip = (g, cls) => { const f = feedInfo(g); return `<a class="chip ${cls}" href="#g-${g.id}"><span>${esc(gLabel(g))}</span><span class="d">${f.days == null ? '기록 없음' : f.days === 0 ? '오늘' : 'D+' + f.days}</span></a>`; };
-    const wdMode = S.settings.feedMode === 'weekdays' && S.settings.feedDays.length;
-    h += `<section class="alert${missed.length ? '' : ' calm'}" aria-label="급여 확인"><div class="alert-h"><b>${missed.length ? `급여 놓침 ${missed.length}마리` : `오늘(${WD[wdOf(today())]}) 급여할 개체 ${dueToday.length}마리`}</b>${over.length ? `<button class="btn small" data-act="feed-over">${over.length}마리 급여 기록</button>` : ''}</div>
-      ${missed.length ? `<div class="chips">${missed.map(g => chip(g, 'miss')).join('')}</div>` : ''}
-      ${missed.length && dueToday.length ? `<div class="alert-sub">오늘(${WD[wdOf(today())]}) 급여할 개체 ${dueToday.length}마리</div>` : ''}
-      ${dueToday.length ? `<div class="chips">${dueToday.map(g => chip(g, 'due')).join('')}</div>` : ''}
-      ${!over.length ? `<p class="hint">오늘 급여할 개체를 모두 기록했습니다. (${doneToday}마리)</p>` : ''}
-      <p class="hint">${wdMode ? `급여 요일: ${wdText(S.settings.feedDays)} (농장 기본). 지정 요일이 지났는데 기록이 없으면 ‘급여 놓침’으로 표시합니다. 개체별 요일은 개체 정보 수정에서 바꿀 수 있습니다.` : `마지막 급여 후 ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일 이상 지난 개체입니다. 설정에서 요일 지정 방식으로 바꿀 수 있습니다.`}</p></section>`;
-  }
+  h += `<div class="vhead"><div><h1 class="vtitle">개체</h1></div></div>`;
   const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['ref', '혈관리용'], ['all', '전체']].filter(([v]) => (v !== 'dead' || cnt.dead) && (v !== 'ref' || cnt.ref));
   h += `<div class="toolbar">
     <div class="seg">${segs.map(([v, t]) => `<button data-act="filter" data-v="${v}" aria-pressed="${S.listFilter === v}">${t}<span class="n">${v === 'all' ? all.length - cnt.ref : (cnt[v] || 0)}</span></button>`).join('')}</div>
@@ -562,6 +646,7 @@ function vList() {
       <button class="btn" data-act="bulk" aria-pressed="${S.bulk}">일괄 급여</button>
       <a class="btn" href="#map">마인드맵</a>
       <a class="btn" href="#labels">QR 라벨</a>
+      <a class="btn" href="#sales">분양 기록</a>
       <button class="btn primary" data-act="new-gecko">+ 개체 등록</button>
     </div></div>`;
   if (!all.length) {
@@ -612,7 +697,7 @@ function vGecko(id) {
   let h = `<a class="back" href="#list">← 개체 목록</a>
   <section class="dhead">
     <div class="ph">${photoUrl(g) ? `<img class="hero-photo" data-ph src="${esc(photoUrl(g))}" alt="${esc(gTitle(g))} 사진">`
-      : `<div class="hero-photo ph-empty${fallbackFor(g) ? ' has-fb' : ''}">${fallbackFor(g) ? `<img data-ph src="${esc(fallbackFor(g))}" alt="" referrerpolicy="no-referrer">` : FOOT}<span class="ph-tag">사진 없음</span>${can('admin') ? `<button class="btn small ph-add" data-act="edit-gecko" data-id="${id}">+ 사진 추가</button>` : ''}</div>`}</div>
+      : `<div class="hero-photo ph-empty ${tone(g)}${fallbackFor(g) ? ' has-fb' : ''}">${fallbackFor(g) ? `<img data-ph src="${esc(fallbackFor(g))}" alt="" referrerpolicy="no-referrer">` : FOOT}<span class="ph-tag">사진 없음</span>${can('admin') ? `<button class="btn small ph-add" data-act="edit-gecko" data-id="${id}">+ 사진 추가</button>` : ''}</div>`}</div>
     <div class="dinfo">
       <div class="dcode"><span>${esc(g.code || '번호 없음')}</span>${g.sample ? '<span class="tag">예시</span>' : ''}${st !== 'active' ? `<span class="pill">${STATUS[st]}</span>` : ''}${g.publicOn ? '' : '<span class="pill">공개 카드 꺼짐</span>'}</div>
       <h1 class="dname">${esc(gTitle(g))}</h1>
@@ -632,7 +717,7 @@ function vGecko(id) {
     </div>
   </section>
   ${st === 'ref' ? `<div class="notice"><p><b>혈관리용 개체입니다.</b> 내 보유 개체가 아니라 혈통도를 잇기 위해 등록한 개체라서 보유 목록·급여 알림·분양 목록에는 나오지 않습니다.</p></div>` : ''}
-  <section class="qlog" aria-label="빠른 기록"${st === 'ref' ? ' hidden' : ''}>${Object.keys(LOGT).map(t => `<button class="qbtn" data-act="log" data-t="${t}" data-id="${id}"><span class="qi">${QICON[t]}</span>${LOGT[t]}</button>`).join('')}</section>
+  <section class="qlog" aria-label="빠른 기록"${st === 'ref' ? ' hidden' : ''}>${['feed', 'weight', 'shed', 'poop', 'note'].map(t => `<button class="qbtn${t === 'feed' ? ' hot' : ''}" data-act="log" data-t="${t}" data-id="${id}"><span class="qi">${QICON[t]}</span>${LOGT[t]}</button>`).join('')}</section>
   <section class="stats" aria-label="최근 상태"${st === 'ref' ? ' hidden' : ''}>
     ${stat('최근 무게', L.weight ? `${fmtG(L.weight.g)} g` : '—', L.weight ? fmtD(L.weight.d) : '기록 없음')}
     ${stat('마지막 급여', fi.days == null ? '—' : fi.days === 0 ? '오늘' : `D+${fi.days}`, L.feed ? `${ATE[L.feed.ate] || ''}${L.feed.food ? ' · ' + L.feed.food : ''}` : '기록 없음', st === 'active' && fi.state === 'missed')}
@@ -1456,7 +1541,7 @@ function openClutchForm(id, pre = {}) {
 }
 
 /* ---------- QR & labels ---------- */
-async function fontsReady() { try { await Promise.all(['600 40px "IBM Plex Mono"', '600 40px "IBM Plex Sans KR"', '400 40px "IBM Plex Sans KR"'].map(f => document.fonts.load(f))); } catch {} }
+async function fontsReady() { try { await Promise.all(['600 40px "IBM Plex Mono"', '400 40px "Gowun Dodum"', '400 40px "Jua"'].map(f => document.fonts.load(f))); } catch {} }
 function fitText(ctx, s, w) { s = String(s || ''); if (ctx.measureText(s).width <= w) return s; while (s.length > 1 && ctx.measureText(s + '…').width > w) s = s.slice(0, -1); return s + '…'; }
 function drawQR(ctx, text, x, y, size) {
   const qr = qrcode(0, 'M'); qr.addData(text); qr.make();
@@ -1476,8 +1561,8 @@ function drawLabel(ctx, x, y, w, h, g, url, guide) {
   let ty = y + p + h * 0.02;
   ctx.textBaseline = 'top'; ctx.fillStyle = '#111111';
   ctx.font = `600 ${Math.round(h * 0.155)}px "IBM Plex Mono", monospace`; ctx.fillText(fitText(ctx, g.code || '—', tw), tx, ty); ty += h * 0.21;
-  if (g.name) { ctx.font = `600 ${Math.round(h * 0.12)}px "IBM Plex Sans KR", sans-serif`; ctx.fillText(fitText(ctx, g.name, tw), tx, ty); ty += h * 0.16; }
-  ctx.fillStyle = '#333333'; ctx.font = `400 ${Math.round(h * 0.095)}px "IBM Plex Sans KR", sans-serif`;
+  if (g.name) { ctx.font = `400 ${Math.round(h * 0.13)}px "Jua", sans-serif`; ctx.fillText(fitText(ctx, g.name, tw), tx, ty); ty += h * 0.16; }
+  ctx.fillStyle = '#333333'; ctx.font = `400 ${Math.round(h * 0.095)}px "Gowun Dodum", sans-serif`;
   ctx.fillText(fitText(ctx, g.morph || '모프 미기록', tw), tx, ty); ty += h * 0.13;
   ctx.fillText(fitText(ctx, sx.t, tw), tx, ty); ty += h * 0.13;
   if (hatchLabel(g)) ctx.fillText(fitText(ctx, hatchLabel(g), tw), tx, ty);
@@ -1547,7 +1632,7 @@ const MM = {
 const MMW = {root:180, group:160, gecko:196, ext:180, none:132};
 const MMH = {root:60, group:46, gecko:58, ext:50, none:42};
 const COL = 236, ROW = 70;
-const BODY_FONT = '"IBM Plex Sans KR", system-ui, sans-serif';
+const BODY_FONT = '"Gowun Dodum", system-ui, sans-serif';
 let mctx;
 function clip(text, font, w) { if (!mctx) mctx = document.createElement('canvas').getContext('2d'); mctx.font = font; return fitText(mctx, text, w); }
 const SEXFILL = {male:'sm', female:'sf', unk:'su'};
@@ -1797,7 +1882,7 @@ const ACT = {
   'switch-farm': t => switchFarm(t.dataset.farm, t.dataset.go),
   'accept-invite': async t => {
     busy(t, true, '참여하는 중…');
-    try { const fid = await q(sb.rpc('accept_invite', {c:t.dataset.code})); S.join.delete(t.dataset.code); lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('list'); toast('농장에 참여했습니다'); }
+    try { const fid = await q(sb.rpc('accept_invite', {c:t.dataset.code})); S.join.delete(t.dataset.code); lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('home'); toast('농장에 참여했습니다'); }
     catch (e) { busy(t, false); toast(errMsg(e), 'bad'); }
   },
   'new-farm': async () => {
@@ -1814,7 +1899,7 @@ const ACT = {
   },
   'leave-farm': async () => {
     if (!await confirmSheet('이 농장에서 나갈까요?', `<b>${esc(S.farm.name)}</b>의 개체를 더 이상 볼 수 없게 됩니다. 다시 들어오려면 관리자에게 새 초대 링크를 받아야 합니다.`, '나가기', true)) return;
-    try { await q(sb.from('farm_members').delete().eq('farm_id', S.farm.id).eq('user_id', S.user.id)); lsDel('gk.farm'); resetFarmView(); await loadAll(); go('list'); toast('농장에서 나갔습니다'); }
+    try { await q(sb.from('farm_members').delete().eq('farm_id', S.farm.id).eq('user_id', S.user.id)); lsDel('gk.farm'); resetFarmView(); await loadAll(); go('home'); toast('농장에서 나갔습니다'); }
     catch (e) { toast(errMsg(e), 'bad'); }
   },
   'login': () => login(),
