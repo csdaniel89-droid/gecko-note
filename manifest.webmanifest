@@ -1,7 +1,7 @@
 {
   "name": "게코 관리노트",
   "short_name": "관리노트",
-  "description": "크레스티드 게코 개체·혈통·브리딩·분양 관리",
+  "description": "크레스티드 게코와 파충류·양서류 개체·혈통·브리딩·분양 관리",
   "lang": "ko",
   "start_url": "./",
   "scope": "./",

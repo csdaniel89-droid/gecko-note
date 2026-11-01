@@ -1,4 +1,4 @@
--- 게코 관리노트 · Supabase 데이터베이스 구조 (2.4판: 가족·브랜드 단위 관리·구성원·공개 카드·혈관리용 개체·급여 요일·가계부·기능 켜기/끄기)
+-- 게코 관리노트 · Supabase 데이터베이스 구조 (2.5판: 가족·브랜드 단위 관리·구성원·공개 카드·혈관리용 개체·급여 요일·가계부·기능 켜기/끄기·여러 종류(파충류·양서류))
 -- Supabase 관리 화면 → SQL Editor → New query 에 이 파일 전체를 붙여 넣고 Run 을 누르세요.
 -- 처음 설치할 때도, 1판에서 올릴 때도 같은 파일을 쓰면 됩니다. 여러 번 실행해도 안전합니다.
 -- 1판에서 올리면 기존 개체·기록·산란·메이팅·설정이 '우리 게코'로 자동으로 옮겨집니다.
@@ -159,6 +159,13 @@ alter table public.geckos add column if not exists feed_days int[] check (feed_d
 alter table public.farms add column if not exists features jsonb not null default '{}';
 alter table public.farms alter column name set default '우리 게코';
 update public.farms set name = '우리 게코' where name = '내 농장';
+
+-- 종류(종) (2.5판): 크레스티드 게코 외 다른 파충류·양서류도 함께 관리
+--   species: 'crested'(크레스티드 게코), 'gargoyle', 'leopard', 'ballpython' … 또는 직접 추가한 종류('x-…')
+--   키우는 종류 목록과 종류별 관리 방식은 farms.features 의 "species" 에 저장합니다
+--   feed_every: 이 개체만 '며칠마다' 급여 확인할 때의 날수 (예: 뱀 10일)
+alter table public.geckos add column if not exists species text not null default 'crested' check (char_length(species) between 1 and 40);
+alter table public.geckos add column if not exists feed_every int check (feed_every is null or feed_every between 1 and 90);
 
 -- 상태에 '혈관리용(ref)' 추가: 내 개체는 아니지만 혈통도를 잇기 위해 등록하는 개체
 alter table public.geckos drop constraint if exists geckos_status_check;
@@ -414,6 +421,9 @@ begin
   res := jsonb_build_object(
     'id', g.id, 'code', g.code, 'name', g.name, 'morph', g.morph, 'sex', g.sex, 'photo', g.photo_path, 'status', g.status,
     'vis', vis, 'member', member, 'unit', coalesce(f.features ->> 'unit', '가족'),
+    'species', g.species,
+    'species_name', (select e ->> 'n' from jsonb_array_elements(case when jsonb_typeof(f.features -> 'species') = 'array' then f.features -> 'species' else '[]'::jsonb end) e where e ->> 'k' = g.species limit 1),
+    'species_class', (select e ->> 'c' from jsonb_array_elements(case when jsonb_typeof(f.features -> 'species') = 'array' then f.features -> 'species' else '[]'::jsonb end) e where e ->> 'k' = g.species limit 1),
     'farm_id', case when member then g.farm_id end, 'farm_name', case when member then f.name end);
   if coalesce((vis ->> 'breeder')::boolean, false) then
     res := res || jsonb_build_object('farm', jsonb_build_object('name', f.name, 'logo', f.logo_path, 'placeholder', f.placeholder, 'placeholder_url', f.placeholder_url));
