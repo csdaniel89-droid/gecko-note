@@ -13,6 +13,11 @@ const APP_NAME = '게코 관리노트';
 const UA = navigator.userAgent || '';
 const IN_KAKAO = /KAKAOTALK/i.test(UA);
 const IN_APP = IN_KAKAO || /Instagram|FBAN|FBAV|Line\/|NAVER\(inapp|DaumApps|everytimeApp|; wv\)/i.test(UA);
+const IS_IOS = /iPhone|iPad|iPod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const IS_ANDROID = /Android/i.test(UA);
+const IS_SAMSUNG = /SamsungBrowser/i.test(UA);
+const IS_IOS_SAFARI = IS_IOS && !/CriOS|FxiOS|EdgiOS|KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(UA);
+const runningAsApp = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
 const ATE = { all:'다 먹음', some:'조금 먹음', none:'안 먹음' };
 const LOGT = { weight:'무게', feed:'급여', shed:'탈피', poop:'배변', note:'메모' };
 const SHEDQ = { ok:'정상', stuck:'불완전(잔여 탈피)' };
@@ -1236,7 +1241,75 @@ function vSetup() {
   h += `<section class="panel"><div class="ph3"><h3>계정</h3></div>
     <dl class="facts"><dt>로그인</dt><dd>${esc((S.user && S.user.email) || '—')}</dd><dt>QR 주소</dt><dd class="mono" style="font-size:13px">${esc(appUrl())}</dd></dl>
     <div class="actions"><a class="btn" href="#labels">QR 라벨 만들기</a><button class="btn" data-act="logout">로그아웃</button></div></section>`;
+  h += installPanel();
   return h;
+}
+
+/* ---------- 앱으로 설치 (테스터용) ---------- */
+// 휴대폰 홈 화면·PC에서 앱처럼 바로 열 수 있게 설치를 돕는 기능. 테스트 기간에 테스터분들이 쉽게 쓰도록 넣어 둠
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; schedule(); });
+window.addEventListener('appinstalled', () => { installEvt = null; toast('앱으로 설치했습니다. 홈 화면에서 ‘관리노트’를 찾아 열어 주세요'); schedule(); });
+const INSTALL_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M12 7.5v7M9 11.5l3 3 3-3M10.5 18.5h3"/></svg>';
+const SHARE_SVG = '<svg class="ib-ic" viewBox="0 0 24 24" width="18" height="18" aria-label="공유 버튼" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5v10h14V11h-1"/></svg>';
+function installPanel() {
+  const memo = `<p class="tester-memo"><span class="pill tester">테스터용</span>테스트 기간에 테스터분들이 홈 화면에서 바로 열 수 있도록 넣어 둔 기능입니다.</p>`;
+  let body;
+  if (runningAsApp()) body = `<p class="inst-ok">${SVG_OK}<span>지금 앱으로 열려 있습니다. 설치가 끝난 상태예요.</span></p>`;
+  else {
+    const how = installEvt ? '누르면 바로 설치 창이 뜹니다.'
+      : IS_IOS ? '아이폰·아이패드는 누르면 Safari에서 홈 화면에 추가하는 순서를 보여 드립니다.'
+      : IS_ANDROID ? '누르면 설치 방법을 보여 드립니다.'
+      : 'PC에서도 Chrome이나 Edge로 설치하면 창 하나로 바로 열 수 있습니다.';
+    body = `<div class="inst-row"><button class="btn primary" data-act="install-app">${INSTALL_SVG}앱으로 설치</button>${memo}</div>
+      <p class="hint">${how} 설치해도 내용은 지금과 같고, 업데이트는 자동으로 반영됩니다.</p>`;
+  }
+  return `<section class="panel install-p" id="install"><div class="ph3"><h3>앱으로 설치</h3></div>${runningAsApp() ? memo : ''}${body}</section>`;
+}
+function installGuide() {
+  const step = (n, t) => `<li><span class="sn">${n}</span><span>${t}</span></li>`;
+  let title, steps, foot = '';
+  if (IS_IOS) {
+    title = '아이폰에 설치하기';
+    steps = [
+      IS_IOS_SAFARI ? '지금처럼 <b>Safari</b>에서 이 화면을 엽니다.' : '이 화면을 <b>Safari</b>에서 엽니다. 다른 앱 안에서 열었다면 메뉴의 ‘Safari로 열기’를 눌러 주세요.',
+      `화면 아래쪽(또는 위쪽)의 <b>공유 버튼</b> ${SHARE_SVG} 을 누릅니다. 보이지 않으면 <b>⋯</b> 버튼을 먼저 누르세요.`,
+      '목록을 아래로 내려 <b>‘홈 화면에 추가’</b>를 누릅니다.',
+      '<b>‘웹 앱으로 열기’</b>가 보이면 켜 둔 채로, 오른쪽 위 <b>‘추가’</b>를 누릅니다.'
+    ];
+    foot = '홈 화면의 ‘관리노트’ 아이콘으로 처음 열 때는 구글 로그인을 한 번 더 해야 할 수 있습니다.';
+  } else if (IS_ANDROID) {
+    title = '안드로이드에 설치하기';
+    steps = [
+      IS_SAMSUNG ? '이 화면을 <b>Chrome</b>에서 엽니다. 삼성 인터넷이라면 메뉴(≡)에서 홈 화면에 추가하는 항목을 눌러도 됩니다.' : '이 화면을 <b>Chrome</b>에서 엽니다.',
+      '오른쪽 위 <b>⋮</b> 메뉴를 누릅니다.',
+      '<b>‘앱 설치’</b> 또는 <b>‘홈 화면에 추가’</b>를 누릅니다. ‘바로가기 만들기’와 ‘설치’를 고르는 창이 나오면 <b>‘설치’</b>를 고르세요.',
+      '앱 목록과 홈 화면에 생긴 <b>‘관리노트’</b>를 눌러 엽니다.'
+    ];
+    foot = '이미 설치했다면 메뉴에 ‘앱 열기’가 보입니다.';
+  } else {
+    title = 'PC에 설치하기';
+    steps = [
+      '이 화면을 <b>Chrome</b>이나 <b>Edge</b>에서 엽니다.',
+      '주소창 오른쪽의 <b>설치 아이콘</b>을 누르거나, 메뉴(⋮ 또는 …)에서 <b>‘앱 설치’</b> 항목을 찾아 누릅니다.',
+      '설치하면 바탕화면이나 시작 메뉴에서 ‘게코 관리노트’를 바로 열 수 있습니다.'
+    ];
+    foot = 'Mac의 Safari는 메뉴 막대의 파일 → ‘Dock에 추가’로 설치할 수 있습니다.';
+  }
+  openSheet(`<div class="form">${sheetHead(title)}<ol class="steps">${steps.map((t, i) => step(i + 1, t)).join('')}</ol>
+    ${foot ? `<p class="hint">${foot}</p>` : ''}
+    <p class="tester-memo"><span class="pill tester">테스터용</span>테스트 기간에 쉽게 설치하도록 넣어 둔 안내입니다.</p>
+    <div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">닫기</button></div></div>`, {label:title});
+}
+async function installApp() {
+  if (!installEvt) { installGuide(); return; }
+  const e = installEvt;
+  try {
+    await e.prompt();
+    const choice = await e.userChoice;
+    if (choice && choice.outcome === 'accepted') installEvt = null;
+  } catch { installGuide(); }
+  schedule();
 }
 function wireSetup() {
   const f = $('#setform'); if (!f || f.dataset.w) return; f.dataset.w = 1;
@@ -1304,7 +1377,7 @@ async function makeInvite() {
 function inviteMessage(code, role) {
   const mine = S.members.find(m => m.user_id === (S.user && S.user.id));
   const from = (mine && (mine.display_name || mine.email)) || '';
-  return `[${S.farm.name} 초대장]\n${from ? `${from}님이 ` : ''}${S.farm.name} 관리노트에 ${ROLE_RO[role]} 초대했습니다.\n아래 링크를 눌러 구글 계정으로 로그인하면 바로 참여할 수 있어요. (7일 동안 한 번 사용 가능)\n${inviteLink(code)}`;
+  return `[${S.farm.name} 초대장]\n${from ? `${from}님이 ` : ''}${S.farm.name} 관리노트에 ${ROLE_RO[role]} 초대했습니다.\n아래 링크를 눌러 구글 계정으로 로그인하면 바로 참여할 수 있어요. (7일 동안 한 번 사용 가능)\n${inviteLink(code)}\n\n휴대폰 앱처럼 쓰려면 로그인 후 설정 맨 아래 ‘앱으로 설치’를 눌러 주세요.`;
 }
 function openInviteSheet(code, role) {
   const msg = inviteMessage(code, role);
@@ -2110,6 +2183,7 @@ const ACT = {
     catch (e) { toast(errMsg(e), 'bad'); }
   },
   'login': () => login(),
+  'install-app': () => installApp(),
   'logout': async () => { if (!await confirmSheet('로그아웃할까요?', '이 기기에서만 로그아웃합니다. 데이터는 그대로 남습니다.', '로그아웃')) return; await sb.auth.signOut(); location.hash = 'list'; },
   'retry': () => { S.conn = 'ok'; S.loaded = {g:false, c:false, p:false}; render(); refresh(); },
   'backup': () => backup(),
@@ -2217,6 +2291,7 @@ function onSession(session) {
   onRoute(); render(); lastLoad = Date.now(); loadAll();
 }
 async function boot() {
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
   render();
   if (!CFG.supabaseUrl || !CFG.supabaseKey || !window.supabase) { S.auth = 'unconfigured'; render(); return; }
   const p = new URLSearchParams(location.search);
