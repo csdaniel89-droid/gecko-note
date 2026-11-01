@@ -20,7 +20,12 @@ const POOPQ = { ok:'정상', soft:'묽음', urate:'요산만', other:'기타' };
 const CLS = { incubating:'인큐 중', hatched:'해칭 완료', failed:'실패', infertile:'무정란' };
 const SRC = { self:'자가 해칭', buy:'입양(구매)', other:'기타' };
 const MORPHS = ['할리퀸','익스트림 할리퀸','핀스트라이프','풀 핀스트라이프','달마시안','슈퍼 달마시안','플레임','타이거','브린들','바이컬러','패턴리스','릴리화이트','아잔틱','카푸치노','소프트스케일','크림시클','팬텀','레드 베이스','옐로 베이스','올리브'];
-const DEF = { feedAlertDays:3, foods:['슈퍼푸드(CGD)','귀뚜라미','듀비아','기타 곤충'], codePrefix:'CR-' };
+const DEF = { feedAlertDays:3, feedMode:'interval', feedDays:[], foods:['슈퍼푸드(CGD)','귀뚜라미','듀비아','기타 곤충'], codePrefix:'CR-' };
+const WD = ['일', '월', '화', '수', '목', '금', '토'];
+const WD_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const wdPicker = (name, days) => `<div class="wdpick" role="group">${WD_ORDER.map(d => `<label><input type="checkbox" name="${name}" value="${d}"${days && days.includes(d) ? ' checked' : ''}><span>${WD[d]}</span></label>`).join('')}</div>`;
+const wdRead = (root, name) => [...root.querySelectorAll(`input[name=${name}]:checked`)].map(i => +i.value).sort();
+const wdText = days => !days || !days.length ? '없음' : days.length === 7 ? '매일' : WD_ORDER.filter(d => days.includes(d)).map(d => WD[d]).join('·');
 const CFG = window.GECKO_CONFIG || {};
 const ROLE = { admin:'관리자', keeper:'기록 담당', viewer:'보기 전용' };
 const ROLE_HINT = { admin:'개체·브리딩·분양·설정·구성원까지 모두', keeper:'무게·급여·탈피·배변·메모 기록 추가와 수정', viewer:'보기만 가능' };
@@ -103,11 +108,31 @@ const gLabel = g => g ? [g.code, g.name].filter(Boolean).join(' ') || g.morph ||
 const sexGroup = s => (s === 'm' || s === 'pm') ? 'm' : (s === 'f' || s === 'pf') ? 'f' : 'u';
 const activeGeckos = () => [...S.geckos.values()].filter(g => gStatus(g) === 'active');
 const byCode = (a, b) => (a.code || '￿').localeCompare(b.code || '￿', 'ko', {numeric:true}) || gTitle(a).localeCompare(gTitle(b), 'ko');
+const wdOf = ds => ((dnum(ds) % 7) + 11) % 7;
+const addDays = (ds, n) => { const t = new Date((dnum(ds) + n) * 86400000); return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`; };
+function feedSchedule(g) {
+  if (g && Array.isArray(g.feedDays) && g.feedDays.length) return {mode:'weekdays', days:g.feedDays, own:true};
+  if (S.settings.feedMode === 'weekdays' && S.settings.feedDays && S.settings.feedDays.length) return {mode:'weekdays', days:S.settings.feedDays, own:false};
+  return {mode:'interval', limit:Number(S.settings.feedAlertDays) || DEF.feedAlertDays, own:false};
+}
+// state: 'missed' 급여 놓침 · 'today' 오늘 급여일 · 'done' 오늘 급여함 · 'ok'
 function feedInfo(g) {
-  const f = g.last && g.last.feed;
-  if (!f || !f.d) return {days:null, over:true, ate:null};
-  const days = daysSince(f.d);
-  return {days, over: days >= (Number(S.settings.feedAlertDays) || DEF.feedAlertDays), ate:f.ate};
+  const f = g.last && g.last.feed, last = f && f.d ? f.d : null;
+  const days = last ? daysSince(last) : null, sc = feedSchedule(g), td = today();
+  const res = {days, ate:f ? f.ate : null, sched:sc, state:'ok', over:false, next:null, missedSince:null};
+  if (sc.mode === 'weekdays') {
+    const isToday = sc.days.includes(wdOf(td));
+    let prev = null;
+    for (let i = 1; i <= 7; i++) { const d = addDays(td, -i); if (sc.days.includes(wdOf(d))) { prev = d; break; } }
+    for (let i = isToday && last !== td ? 0 : 1; i <= 7; i++) { const d = addDays(td, i); if (sc.days.includes(wdOf(d))) { res.next = d; break; } }
+    if (!last || (prev && last < prev)) { res.state = 'missed'; res.missedSince = prev; }
+    else if (isToday) res.state = last === td ? 'done' : 'today';
+  } else {
+    if (!last || days >= sc.limit) res.state = 'missed';
+    else if (last === td) res.state = 'done';
+  }
+  res.over = res.state === 'missed' || res.state === 'today';
+  return res;
 }
 function sorter(k) {
   if (k === 'feed') return (a, b) => ((feedInfo(b).days ?? 1e9) - (feedInfo(a).days ?? 1e9)) || byCode(a, b);
@@ -170,7 +195,7 @@ const gFromRow = r => ({
   acquiredDate:r.acquired_date, source:r.source, sourceNote:r.source_note || '', sireId:r.sire_id, sireExt:r.sire_ext || '',
   damId:r.dam_id, damExt:r.dam_ext || '', notes:r.notes || '', photo:r.photo_path, status:r.status || 'active', sale:r.sale,
   sample:r.sample, createdAt:Date.parse(r.created_at) || 0, last:{},
-  farmId:r.farm_id, hatchMode:r.hatch_mode || 'exact', publicOn:r.public_on !== false, publicFields:r.public_fields || null
+  farmId:r.farm_id, feedDays:Array.isArray(r.feed_days) && r.feed_days.length ? r.feed_days : null, hatchMode:r.hatch_mode || 'exact', publicOn:r.public_on !== false, publicFields:r.public_fields || null
 });
 const logFromRow = r => ({id:r.id, t:r.type, d:r.date, g:r.grams == null ? null : Number(r.grams), food:r.food, ate:r.ate, q:r.quality, n:r.note, _i:Date.parse(r.created_at) || 0});
 const logToRow = (gid, e) => ({gecko_id:gid, farm_id:S.farm && S.farm.id, type:e.t, date:e.d, grams:e.t === 'weight' ? e.g : null, food:e.t === 'feed' ? (e.food || null) : null, ate:e.t === 'feed' ? (e.ate || 'all') : null, quality:nul(e.q), note:nul(e.n)});
@@ -205,7 +230,7 @@ async function loadAll() {
     S.clutches = new Map(cl.map(r => [r.id, cFromRow(r)]));
     S.pairings = new Map(pr.map(r => [r.id, pFromRow(r)]));
     const f = S.farm;
-    S.settings = {feedAlertDays:f.feed_alert_days ?? DEF.feedAlertDays, foods:f.foods && f.foods.length ? f.foods : DEF.foods, codePrefix:f.code_prefix ?? DEF.codePrefix};
+    S.settings = {feedAlertDays:f.feed_alert_days ?? DEF.feedAlertDays, feedMode:f.feed_mode || 'interval', feedDays:Array.isArray(f.feed_days) ? f.feed_days : [], foods:f.foods && f.foods.length ? f.foods : DEF.foods, codePrefix:f.code_prefix ?? DEF.codePrefix};
     S.members = members || []; S.invites = (invites || []).filter(i => Date.parse(i.expires_at) > Date.now());
     S.loaded = {g:true, c:true, p:true}; S.conn = 'ok';
     await refreshUrls();
@@ -512,13 +537,21 @@ function vList() {
   if (S.sexFilter !== 'all') arr = arr.filter(g => sexGroup(g.sex) === S.sexFilter);
   if (S.q) arr = arr.filter(matchQ);
   arr.sort(sorter(S.sort));
-  const over = activeGeckos().filter(g => feedInfo(g).over).sort((a, b) => (feedInfo(b).days ?? 1e9) - (feedInfo(a).days ?? 1e9));
+  const byOld = (a, b) => (feedInfo(b).days ?? 1e9) - (feedInfo(a).days ?? 1e9);
+  const act = activeGeckos(), missed = act.filter(g => feedInfo(g).state === 'missed').sort(byOld), dueToday = act.filter(g => feedInfo(g).state === 'today').sort(byCode);
+  const doneToday = act.filter(g => feedInfo(g).state === 'done' && feedInfo(g).sched.mode === 'weekdays').length;
+  const over = [...missed, ...dueToday];
   let h = '';
   if (all.some(g => g.sample)) h += `<div class="notice"><p><b>예시 개체가 들어 있습니다.</b> 화면을 둘러보는 용도입니다. 내 개체를 등록한 뒤 지우면 됩니다.</p><button class="btn small" data-act="clear-samples">예시 지우기</button></div>`;
-  if (over.length && !S.q && !S.bulk) {
-    h += `<section class="alert" aria-label="급여 확인 필요"><div class="alert-h"><b>급여 확인 필요 ${over.length}마리</b><button class="btn small" data-act="feed-over">이 개체들 급여 기록</button></div>
-      <div class="chips">${over.map(g => { const f = feedInfo(g); return `<a class="chip" href="#g-${g.id}"><span>${esc(gLabel(g))}</span><span class="d">${f.days == null ? '기록 없음' : 'D+' + f.days}</span></a>`; }).join('')}</div>
-      <p class="hint">마지막 급여 후 ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일 이상 지난 개체입니다. 기준은 설정에서 바꿀 수 있습니다.</p></section>`;
+  if ((over.length || doneToday) && !S.q && !S.bulk) {
+    const chip = (g, cls) => { const f = feedInfo(g); return `<a class="chip ${cls}" href="#g-${g.id}"><span>${esc(gLabel(g))}</span><span class="d">${f.days == null ? '기록 없음' : f.days === 0 ? '오늘' : 'D+' + f.days}</span></a>`; };
+    const wdMode = S.settings.feedMode === 'weekdays' && S.settings.feedDays.length;
+    h += `<section class="alert${missed.length ? '' : ' calm'}" aria-label="급여 확인"><div class="alert-h"><b>${missed.length ? `급여 놓침 ${missed.length}마리` : `오늘(${WD[wdOf(today())]}) 급여할 개체 ${dueToday.length}마리`}</b>${over.length ? `<button class="btn small" data-act="feed-over">${over.length}마리 급여 기록</button>` : ''}</div>
+      ${missed.length ? `<div class="chips">${missed.map(g => chip(g, 'miss')).join('')}</div>` : ''}
+      ${missed.length && dueToday.length ? `<div class="alert-sub">오늘(${WD[wdOf(today())]}) 급여할 개체 ${dueToday.length}마리</div>` : ''}
+      ${dueToday.length ? `<div class="chips">${dueToday.map(g => chip(g, 'due')).join('')}</div>` : ''}
+      ${!over.length ? `<p class="hint">오늘 급여할 개체를 모두 기록했습니다. (${doneToday}마리)</p>` : ''}
+      <p class="hint">${wdMode ? `급여 요일: ${wdText(S.settings.feedDays)} (농장 기본). 지정 요일이 지났는데 기록이 없으면 ‘급여 놓침’으로 표시합니다. 개체별 요일은 개체 정보 수정에서 바꿀 수 있습니다.` : `마지막 급여 후 ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일 이상 지난 개체입니다. 설정에서 요일 지정 방식으로 바꿀 수 있습니다.`}</p></section>`;
   }
   const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['ref', '혈관리용'], ['all', '전체']].filter(([v]) => (v !== 'dead' || cnt.dead) && (v !== 'ref' || cnt.ref));
   h += `<div class="toolbar">
@@ -555,7 +588,10 @@ function card(g) {
   let pills = w ? `<span class="pill">${fmtG(w.g)} g</span>` : '';
   if (st !== 'active') pills += `<span class="pill">${STATUS[st]}</span>`;
   else {
-    pills += fi.days == null ? `<span class="pill bad">급여 기록 없음</span>` : `<span class="pill${fi.over ? ' bad' : ''}">${fi.days === 0 ? '오늘 급여' : `급여 D+${fi.days}`}</span>`;
+    pills += fi.days == null ? `<span class="pill bad">급여 기록 없음</span>`
+      : fi.state === 'missed' ? `<span class="pill bad">급여 놓침 · D+${fi.days}</span>`
+      : fi.state === 'today' ? `<span class="pill warn">오늘 급여일 · D+${fi.days}</span>`
+      : fi.days === 0 ? `<span class="pill good">오늘 급여함</span>` : `<span class="pill">급여 D+${fi.days}</span>`;
     if (fi.ate === 'none') pills += `<span class="pill warn">최근 거식</span>`;
   }
   const inner = `${photoTag(g)}<span class="gc-body"><span class="gc-top"><span class="code">${esc(g.code || '번호 없음')}</span><span class="sex ${sx.c}" title="${sx.t}">${sx.s}</span>${g.sample ? '<span class="tag">예시</span>' : ''}</span><span class="nm">${esc(gTitle(g))}</span>${sub ? `<span class="mf">${esc(sub)}</span>` : ''}<span class="meta">${pills}</span></span>`;
@@ -585,6 +621,7 @@ function vGecko(id) {
         <dt>해칭일</dt><dd>${esc(hatchText(g))} <span class="muted">${esc(hatchAge(g))}</span></dd>
         <dt>입양일</dt><dd>${fmtD(g.acquiredDate)}</dd>
         <dt>출처</dt><dd>${esc(src)}</dd>
+        ${st === 'active' ? `<dt>급여</dt><dd>${fi.sched.mode === 'weekdays' ? `${wdText(fi.sched.days)} <span class="muted">${fi.sched.own ? '(이 개체만)' : '(농장 기본)'}</span>` : `${fi.sched.limit}일마다 확인 <span class="muted">(농장 기본)</span>`}${fi.state === 'missed' ? ' <span class="pill bad">급여 놓침</span>' : fi.state === 'today' ? ' <span class="pill warn">오늘 급여일</span>' : fi.next ? ` <span class="muted">· 다음 ${fmtShort(fi.next)}(${WD[wdOf(fi.next)]})</span>` : ''}</dd>` : ''}
       </dl>
       <div class="actions">
         <button class="btn" data-act="edit-gecko" data-id="${id}">정보 수정</button>
@@ -598,7 +635,7 @@ function vGecko(id) {
   <section class="qlog" aria-label="빠른 기록"${st === 'ref' ? ' hidden' : ''}>${Object.keys(LOGT).map(t => `<button class="qbtn" data-act="log" data-t="${t}" data-id="${id}"><span class="qi">${QICON[t]}</span>${LOGT[t]}</button>`).join('')}</section>
   <section class="stats" aria-label="최근 상태"${st === 'ref' ? ' hidden' : ''}>
     ${stat('최근 무게', L.weight ? `${fmtG(L.weight.g)} g` : '—', L.weight ? fmtD(L.weight.d) : '기록 없음')}
-    ${stat('마지막 급여', fi.days == null ? '—' : fi.days === 0 ? '오늘' : `D+${fi.days}`, L.feed ? `${ATE[L.feed.ate] || ''}${L.feed.food ? ' · ' + L.feed.food : ''}` : '기록 없음', st === 'active' && fi.over)}
+    ${stat('마지막 급여', fi.days == null ? '—' : fi.days === 0 ? '오늘' : `D+${fi.days}`, L.feed ? `${ATE[L.feed.ate] || ''}${L.feed.food ? ' · ' + L.feed.food : ''}` : '기록 없음', st === 'active' && fi.state === 'missed')}
     ${stat('마지막 탈피', L.shed ? (daysSince(L.shed.d) === 0 ? '오늘' : `D+${daysSince(L.shed.d)}`) : '—', L.shed ? fmtD(L.shed.d) : '기록 없음')}
     ${stat('마지막 배변', L.poop ? (daysSince(L.poop.d) === 0 ? '오늘' : `D+${daysSince(L.poop.d)}`) : '—', L.poop ? fmtD(L.poop.d) : '기록 없음')}
   </section>`;
@@ -879,12 +916,18 @@ function vSetup() {
       <div class="ph3"><h3>QR 공개 카드 기본값</h3></div>
       <p class="hint">항상 공개: 사진, 개체번호, 이름, 모프, 성별. 아래 항목은 여기서 정한 값이 기본이고, 개체마다 따로 바꿀 수 있습니다. 분양받은 분의 연락처는 공개되지 않습니다.</p>
       <div class="pubgrid">${PUBF.map(([k, t]) => `<label class="check"><input type="checkbox" name="s-pub" value="${k}"${pd[k] ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <div class="ph3"><h3>급여 확인</h3></div>
+      <div class="field"><span class="lbl">확인 방식</span>
+        <div class="seg radio">${[['weekdays', '요일 지정'], ['interval', '며칠마다']].map(([k, t]) => `<label><input type="radio" name="s-fmode" value="${k}"${(s.feedMode || 'interval') === k ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div></div>
+      <div class="field" id="s-wd-f"${s.feedMode === 'weekdays' ? '' : ' hidden'}><span class="lbl">급여 요일 (농장 기본)</span>${wdPicker('s-wd', s.feedDays)}
+        <p class="hint">급여 요일에는 목록 위에 ‘오늘 급여할 개체’가 뜨고, 지정 요일이 지났는데 기록이 없으면 ‘급여 놓침’으로 표시합니다. 해츨링처럼 주기가 다른 개체는 개체 정보 수정에서 따로 정할 수 있습니다.</p></div>
+      <div class="field" id="s-days-f"${s.feedMode === 'weekdays' ? ' hidden' : ''}><label for="s-days">급여 확인 기준 (일)</label><input id="s-days" type="number" min="1" max="60" inputmode="numeric" value="${esc(s.feedAlertDays ?? DEF.feedAlertDays)}"><p class="hint">마지막 급여 후 이 날수가 지나면 목록 위에 표시합니다.</p></div>
       <div class="ph3"><h3>기록</h3></div>
       <div class="grid2">
-        <div class="field"><label for="s-days">급여 확인 기준 (일)</label><input id="s-days" type="number" min="1" max="60" inputmode="numeric" value="${esc(s.feedAlertDays ?? DEF.feedAlertDays)}"><p class="hint">마지막 급여 후 이 날수가 지나면 목록 위에 표시합니다.</p></div>
         <div class="field"><label for="s-prefix">개체번호 앞글자</label><input id="s-prefix" value="${esc(s.codePrefix ?? DEF.codePrefix)}" autocomplete="off"><p class="hint">새 개체에 ${esc((s.codePrefix ?? DEF.codePrefix) + '001')}처럼 번호를 제안합니다.</p></div>
       </div>
-      <div class="field"><label for="s-foods">먹이 목록</label><input id="s-foods" value="${esc((s.foods || DEF.foods).join(', '))}" autocomplete="off"><p class="hint">쉼표(,)로 구분합니다.</p></div>
+        <div class="field"><label for="s-foods">먹이 목록</label><input id="s-foods" value="${esc((s.foods || DEF.foods).join(', '))}" autocomplete="off"><p class="hint">쉼표(,)로 구분합니다.</p></div>
+      </div>
       <p class="err" id="s-err" hidden></p>
       <div class="sh-foot"><button class="btn primary" type="submit" id="s-save">설정 저장</button></div>
     </form>`;
@@ -937,12 +980,18 @@ function wireSetup() {
     } catch { st.textContent = '로고를 올리지 못했습니다. 다른 이미지로 다시 시도해 주세요.'; }
     finally { save.disabled = false; lf.value = ''; }
   });
+  f.querySelectorAll('input[name=s-fmode]').forEach(r => r.addEventListener('change', () => {
+    const wd = (f.querySelector('input[name=s-fmode]:checked') || {}).value === 'weekdays';
+    $('#s-wd-f').hidden = !wd; $('#s-days-f').hidden = wd;
+  }));
   const ld = $('#s-logo-del');
   if (ld) ld.addEventListener('click', () => { logoPath = null; S.setupDirty = true; $('#s-logo-prev').innerHTML = '<span>로고 없음</span>'; $('#s-logo-st').textContent = '설정 저장을 누르면 로고가 빠집니다.'; });
   f.addEventListener('submit', async ev => {
     ev.preventDefault();
     const days = parseInt($('#s-days').value, 10), err = $('#s-err');
-    if (!(days >= 1 && days <= 60)) { err.textContent = '급여 확인 기준은 1~60일 사이로 입력하세요.'; err.hidden = false; return; }
+    const fmode = (f.querySelector('input[name=s-fmode]:checked') || {}).value || 'interval', fdays = wdRead(f, 's-wd');
+    if (fmode === 'interval' && !(days >= 1 && days <= 60)) { err.textContent = '급여 확인 기준은 1~60일 사이로 입력하세요.'; err.hidden = false; return; }
+    if (fmode === 'weekdays' && !fdays.length) { err.textContent = '급여 요일을 하나 이상 골라 주세요.'; err.hidden = false; return; }
     const foods = $('#s-foods').value.split(',').map(x => x.trim()).filter(Boolean);
     const ph = (f.querySelector('input[name=s-ph]:checked') || {}).value || 'logo';
     const meta = (S.user && S.user.user_metadata) || {};
@@ -953,7 +1002,7 @@ function wireSetup() {
       await q(sb.from('farms').update({
         name:$('#s-name').value.trim() || '내 농장', logo_path:logoPath, placeholder:ph,
         placeholder_url:ph === 'google' ? (meta.avatar_url || meta.picture || null) : null,
-        public_defaults:pub, feed_alert_days:days, code_prefix:$('#s-prefix').value.trim(), foods:foods.length ? foods : DEF.foods,
+        public_defaults:pub, feed_alert_days:days >= 1 && days <= 60 ? days : (S.settings.feedAlertDays || 3), feed_mode:fmode, feed_days:fdays, code_prefix:$('#s-prefix').value.trim(), foods:foods.length ? foods : DEF.foods,
         updated_at:new Date().toISOString()
       }).eq('id', S.farm.id));
       if (old && old !== logoPath) sb.storage.from('photos').remove([old]).catch(() => {});
@@ -1102,6 +1151,10 @@ function openGeckoForm(id, pre = {}) {
     <fieldset class="fs"><legend>혈통 (부모)</legend>${parentField('sire')}${parentField('dam')}<p class="hint">목록에 있는 개체를 고르면 조부모까지 혈통도가 이어집니다.</p></fieldset>
     ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS_OPT).map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label for="f-notes">메모</label><textarea id="f-notes" rows="3">${esc(v.notes || '')}</textarea></div>
+    ${isRef ? '' : `<fieldset class="fs"><legend>급여 요일</legend>
+      <label class="check"><input type="checkbox" id="f-fdef"${v.feedDays && v.feedDays.length ? '' : ' checked'}><span>농장 기본 따르기<small>${S.settings.feedMode === 'weekdays' && S.settings.feedDays.length ? `지금 농장 기본: ${wdText(S.settings.feedDays)}` : `지금 농장 기본: ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일마다 확인`}</small></span></label>
+      <div id="f-fdays"${v.feedDays && v.feedDays.length ? '' : ' hidden'}>${wdPicker('f-wd', v.feedDays || S.settings.feedDays)}<p class="hint">해츨링처럼 이 개체만 급여 요일이 다를 때 고릅니다. 매일 급여면 모든 요일을 고르세요.</p></div>
+    </fieldset>`}
     <fieldset class="fs"><legend>QR 공개 카드</legend>
       <label class="check"><input type="checkbox" id="f-pubon"${v.publicOn === false ? '' : ' checked'}><span>QR 공개 카드 사용<small>끄면 로그인한 농장 구성원만 볼 수 있습니다.</small></span></label>
       <p class="hint">항상 공개: 사진, 개체번호, 이름, 모프, 성별</p>
@@ -1134,6 +1187,8 @@ function openGeckoForm(id, pre = {}) {
     sh.querySelector('#f-hatch-f').hidden = hm.value === 'unknown'; sh.querySelector('#f-hatch-u').hidden = hm.value !== 'unknown';
     sh.querySelector('label[for=f-hatch]').textContent = hm.value === 'approx' ? '대략적인 날짜' : '날짜';
   });
+  const fd = sh.querySelector('#f-fdef');
+  if (fd) fd.addEventListener('change', () => { sh.querySelector('#f-fdays').hidden = fd.checked; });
   const pd = sh.querySelector('#f-pubdef');
   pd.addEventListener('change', () => { sh.querySelector('#f-pubf').hidden = pd.checked; });
   const fp = sh.querySelector('#f-photo');
@@ -1165,6 +1220,7 @@ function openGeckoForm(id, pre = {}) {
       dam_id:dp.startsWith('id:') ? dp.slice(3) : null, dam_ext:dp === 'ext' ? fval(sh, 'f-dam-ext') : '',
       notes:sh.querySelector('#f-notes').value.trim(), photo_path:photo || null, updated_at:new Date().toISOString(),
       public_on:sh.querySelector('#f-pubon').checked,
+      feed_days:(fd && !fd.checked && wdRead(sh, 'f-wd').length) ? wdRead(sh, 'f-wd') : null,
       public_fields:pd.checked ? null : Object.fromEntries(PUBF.map(([k]) => [k, !!sh.querySelector(`input[name=pf][value=${k}]`).checked]))
     };
     if (row.hatch_mode === 'approx' && !row.hatch_date) return showErr(sh, '대략적인 해칭일을 골라 주세요. 모르면 ‘알 수 없음’을 고르세요.');

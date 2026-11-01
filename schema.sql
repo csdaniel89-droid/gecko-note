@@ -1,4 +1,4 @@
--- 게코 관리노트 · Supabase 데이터베이스 구조 (2.1판: 농장·구성원·공개 카드·혈관리용 개체)
+-- 게코 관리노트 · Supabase 데이터베이스 구조 (2.2판: 농장·구성원·공개 카드·혈관리용 개체·급여 요일)
 -- Supabase 관리 화면 → SQL Editor → New query 에 이 파일 전체를 붙여 넣고 Run 을 누르세요.
 -- 처음 설치할 때도, 1판에서 올릴 때도 같은 파일을 쓰면 됩니다. 여러 번 실행해도 안전합니다.
 -- 1판에서 올리면 기존 개체·기록·산란·메이팅·설정이 '내 농장'으로 자동으로 옮겨집니다.
@@ -145,6 +145,12 @@ do $$ begin
     alter table public.geckos add constraint geckos_hatch_mode_check check (hatch_mode in ('exact', 'approx', 'unknown'));
   end if;
 end $$;
+
+-- 급여 요일 (2.2판): 농장 기본 방식·요일 + 개체별 요일(비우면 농장 기본)
+--   요일 번호: 0=일, 1=월, 2=화, 3=수, 4=목, 5=금, 6=토
+alter table public.farms  add column if not exists feed_mode text not null default 'interval' check (feed_mode in ('interval', 'weekdays'));
+alter table public.farms  add column if not exists feed_days int[] not null default '{}' check (feed_days <@ array[0, 1, 2, 3, 4, 5, 6]);
+alter table public.geckos add column if not exists feed_days int[] check (feed_days <@ array[0, 1, 2, 3, 4, 5, 6]);
 
 -- 상태에 '혈관리용(ref)' 추가: 내 개체는 아니지만 혈통도를 잇기 위해 등록하는 개체
 alter table public.geckos drop constraint if exists geckos_status_check;

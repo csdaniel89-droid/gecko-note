@@ -415,3 +415,15 @@ code{font-family:var(--f-mono);font-size:.92em;background:var(--sunken);padding:
 .kin.warn b{color:var(--bad)}
 .kin ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:2px}
 .kin-note{margin-top:6px}
+
+/* feeding weekdays */
+.wdpick{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;max-width:420px}
+.wdpick label{position:relative;cursor:pointer}
+.wdpick input{position:absolute;opacity:0;width:1px;height:1px;min-height:0}
+.wdpick span{display:grid;place-items:center;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--bg);font-weight:600;font-size:14px;color:var(--ink-2)}
+.wdpick input:checked+span{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.wdpick input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
+.alert.calm{background:var(--accent-soft)}
+.alert.calm .alert-h b{color:var(--accent)}
+.alert-sub{font-size:13.5px;font-weight:600;color:var(--ink-2);margin-top:2px}
+.chip.due .d{color:var(--warn)}
