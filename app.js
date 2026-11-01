@@ -106,7 +106,7 @@ const S = {
   auth:'loading', user:null, conn:'ok', urls:new Map(),
   farms:[], farm:null, role:null, members:[], invites:[], needFarm:false,
   ledger:[], ledgerErr:'', lp:{mode:'month', y:+today().slice(0, 4), m:+today().slice(5, 7)},
-  pub:new Map(), pubLoading:new Set(), join:new Map(),
+  pub:new Map(), pubLoading:new Set(), join:new Map(), shop:new Map(), shopLoading:new Set(), shopSp:new Map(),
   geckos:new Map(), clutches:new Map(), pairings:new Map(), settings:{...DEF},
   loaded:{g:false, c:false, p:false},
   logs:[], logGid:null, logsLoaded:false,
@@ -121,6 +121,8 @@ const UNITS = { 가족:'집에서 함께 키워요', 브랜드:'브리더·샵�
 const unitOf = f => { const u = f && (f.unit || (f.features && f.features.unit)); return UNITS[u] ? u : '가족'; };
 const U = () => unitOf(S.farm);
 const feat = k => !(S.farm && S.farm.features && S.farm.features[k] === false);
+const shopCfg = () => (S.farm && S.farm.features && S.farm.features.shop && typeof S.farm.features.shop === 'object') ? S.farm.features.shop : {};
+const shopOn = () => shopCfg().on === true;
 /* ---------- 종류(종) ---------- */
 // care 'full' = 크레형 관리: 크레스티드 게코처럼 기본 급여 요일 알림·무게 알림·브리딩까지
 // care 'basic' = 기본 관리: 기록·사진·혈통·QR은 같고, 급여 알림은 그 개체에 따로 정한 주기가 있을 때만
@@ -211,6 +213,35 @@ function feedInfo(g) {
   res.over = res.state === 'missed' || res.state === 'today';
   return res;
 }
+/* ---------- 신고 도우미 ----------
+   2025-12-14부터: 야생동물을 주고받으면(무료 포함) 양도·양수 신고 — 한 달 거래분을 다음 달 10일까지, 폐사는 30일 이내
+   (2026년 1월 지자체 안내 기준. 기록·알림 도구이며 법령 해석이 아님) */
+const REPORT_START = '2025-12-14';
+const WIMS_URL = 'https://wims.mcee.go.kr';
+const RPT = { in:'양수 신고', out:'양도 신고', dead:'폐사 신고' };
+const RPT_WHAT = { in:'입양', out:'분양', dead:'폐사' };
+const nextMonth10 = d => { const [y, m] = d.split('-').map(Number); return m === 12 ? `${y + 1}-01-10` : `${y}-${pad(m + 1)}-10`; };
+function reportItems() {
+  if (!feat('report')) return [];
+  const out = [];
+  for (const g of S.geckos.values()) {
+    if (g.sample || gStatus(g) === 'ref') continue;
+    const r = g.reports || {};
+    if (g.source !== 'self' && g.acquiredDate && g.acquiredDate >= REPORT_START) out.push({g, t:'in', date:g.acquiredDate, due:nextMonth10(g.acquiredDate), done:r.in || null});
+    if (gStatus(g) === 'sold' && g.sale && g.sale.date && g.sale.date >= REPORT_START) out.push({g, t:'out', date:g.sale.date, due:nextMonth10(g.sale.date), done:r.out || null});
+    if (gStatus(g) === 'dead' && g.diedAt && g.diedAt >= REPORT_START) out.push({g, t:'dead', date:g.diedAt, due:addDays(g.diedAt, 30), done:r.dead || null});
+  }
+  return out.sort((a, b) => a.due.localeCompare(b.due) || byCode(a.g, b.g));
+}
+const dueText = due => { const n = Math.round(dnum(due) - dnum(today())); return n < 0 ? `<span class="pill bad">기한 ${-n}일 지남</span>` : n === 0 ? '<span class="pill bad">오늘까지</span>' : n <= 7 ? `<span class="pill warn">D-${n}</span>` : `<span class="pill">D-${n}</span>`; };
+async function markReport(id, t, done) {
+  const g = G(id); if (!g || !RPT[t]) return;
+  const reports = {...(g.reports || {})};
+  if (done) reports[t] = today(); else delete reports[t];
+  try { await q(sb.from('geckos').update({reports, updated_at:new Date().toISOString()}).eq('id', id)); toast(done ? `${RPT[t]} 완료로 표시했습니다` : '완료 표시를 취소했습니다'); await refresh(); }
+  catch (e) { toast(errMsg(e), 'bad'); }
+}
+
 function sorter(k) {
   if (k === 'feed') return (a, b) => ((feedInfo(b).days ?? 1e9) - (feedInfo(a).days ?? 1e9)) || byCode(a, b);
   if (k === 'name') return (a, b) => gTitle(a).localeCompare(gTitle(b), 'ko') || byCode(a, b);
@@ -274,7 +305,8 @@ const gFromRow = r => ({
   damId:r.dam_id, damExt:r.dam_ext || '', notes:r.notes || '', photo:r.photo_path, status:r.status || 'active', sale:r.sale,
   sample:r.sample, createdAt:Date.parse(r.created_at) || 0, last:{},
   farmId:r.farm_id, acquiredPrice:r.acquired_price == null ? null : Number(r.acquired_price), feedDays:Array.isArray(r.feed_days) && r.feed_days.length ? r.feed_days : null, hatchMode:r.hatch_mode || 'exact', publicOn:r.public_on !== false, publicFields:r.public_fields || null,
-  species:r.species || 'crested', feedEvery:r.feed_every > 0 ? Number(r.feed_every) : null
+  species:r.species || 'crested', feedEvery:r.feed_every > 0 ? Number(r.feed_every) : null,
+  listing:r.listing && typeof r.listing === 'object' ? r.listing : null, diedAt:r.died_at || null, reports:r.reports && typeof r.reports === 'object' ? r.reports : {}
 });
 const logFromRow = r => ({id:r.id, t:r.type, d:r.date, g:r.grams == null ? null : Number(r.grams), food:r.food, ate:r.ate, q:r.quality, n:r.note, _i:Date.parse(r.created_at) || 0});
 const logToRow = (gid, e) => ({gecko_id:gid, farm_id:S.farm && S.farm.id, type:e.t, date:e.d, grams:e.t === 'weight' ? e.g : null, food:e.t === 'feed' ? (e.food || null) : null, ate:e.t === 'feed' ? (e.ate || 'all') : null, quality:nul(e.q), note:nul(e.n)});
@@ -300,7 +332,7 @@ async function loadAll() {
       q(sb.from('farm_members').select('*').eq('farm_id', fid).order('joined_at')),
       cur.role === 'admin' ? q(sb.from('farm_invites').select('*').eq('farm_id', fid).is('used_at', null).order('created_at', {ascending:false})) : Promise.resolve([])
     ]);
-    S.oldCols = gs.length > 0 && !('species' in gs[0]);
+    S.oldCols = gs.length > 0 && !('listing' in gs[0]);
     const geckos = new Map(gs.map(r => [r.id, gFromRow(r)]));
     for (const r of lat) {
       const g = geckos.get(r.gecko_id); if (!g) continue;
@@ -402,7 +434,8 @@ function route() {
   if (h.startsWith('pub-')) return {v:'pub', id:h.slice(4)};
   if (h.startsWith('join-')) return {v:'join', code:h.slice(5)};
   if (h.startsWith('map-')) return {v:'map', id:h.slice(4)};
-  if (['breeding', 'sales', 'setup', 'labels', 'map', 'list', 'ledger'].includes(h)) return {v:h};
+  if (h.startsWith('shop-')) return {v:'shop', id:h.slice(5)};
+  if (['breeding', 'sales', 'setup', 'labels', 'map', 'list', 'ledger', 'reports'].includes(h)) return {v:h};
   return {v:'home'};
 }
 function go(h) { if (location.hash.slice(1) === h) render(); else location.hash = h; }
@@ -411,7 +444,7 @@ function schedule() { if (pending) return; pending = true; requestAnimationFrame
 const NEED = {
   'new-gecko':'admin', 'edit-gecko':'admin', 'sale':'admin', 'sale-cancel':'admin', 'new-pair':'admin', 'edit-pair':'admin',
   'new-clutch':'admin', 'edit-clutch':'admin', 'load-samples':'admin', 'clear-samples':'admin', 'backup':'admin',
-  'new-ledger':'admin', 'edit-ledger':'admin', 'ledger-csv':'admin',
+  'new-ledger':'admin', 'edit-ledger':'admin', 'ledger-csv':'admin', 'listing':'admin', 'report-done':'admin', 'report-undo':'admin',
   'make-invite':'admin', 'revoke-invite':'admin', 'remove-member':'admin', 'to-ref':'admin',
   'log':'log', 'log-edit':'log', 'bulk':'log', 'bulk-feed':'log', 'feed-over':'log'
 };
@@ -432,9 +465,11 @@ function render() {
   if (!signedIn) {
     if ((S.auth === 'out') && (r.v === 'gecko' || r.v === 'pub')) { view.innerHTML = vPublic(r.id, false); drawChart(); return; }
     if (S.auth === 'out' && r.v === 'join') { view.innerHTML = vJoin(r.code); return; }
+    if (S.auth === 'out' && r.v === 'shop') { view.innerHTML = vShop(r.id); return; }
     view.innerHTML = vAuth(); return;
   }
   if (r.v === 'join') { view.innerHTML = vJoin(r.code); return; }
+  if (r.v === 'shop') { view.innerHTML = vShop(r.id); setTabs('list'); return; }
   if (!S.loaded.g) { view.innerHTML = loadingHTML(); return; }
   if (S.conn === 'err') { view.innerHTML = connErr(); return; }
   if (S.needFarm) { view.innerHTML = vOnboard(); wireOnboard(); return; }
@@ -447,6 +482,7 @@ function render() {
   else if (r.v === 'ledger') html = feat('ledger') ? vLedger() : offNote('가계부', '수입·지출 기록과 개체별 손익을 보는 기능입니다.');
   else if (r.v === 'breeding') html = feat('breeding') ? vBreeding() : offNote('브리딩', '메이팅·산란·인큐베이터·해칭을 기록하는 기능입니다.');
   else if (r.v === 'sales') html = vSales();
+  else if (r.v === 'reports') html = feat('report') ? vReports() : offNote('신고 도우미', '분양·입양·폐사 때 야생동물 신고 기한을 챙기는 기능입니다.');
   else if (r.v === 'setup') html = vSetup();
   else if (r.v === 'labels') html = vLabels();
   else html = vList();
@@ -454,7 +490,7 @@ function render() {
   view.classList.toggle('bulking', S.bulk && r.v === 'list');
   view.querySelectorAll('[data-act]').forEach(el => { const n = NEED[el.dataset.act]; if (n && !can(n) && !el.classList.contains('rowbtn') && !el.classList.contains('ck')) el.hidden = true; });
   view.querySelectorAll('.qlog,.actions,.acts').forEach(el => { if (el.children.length && ![...el.children].some(c => !c.hidden)) el.hidden = true; });
-  setTabs(['gecko', 'labels', 'pub', 'sales'].includes(r.v) ? 'list' : r.v === 'ledger' ? 'home' : r.v);
+  setTabs(['gecko', 'labels', 'pub', 'sales'].includes(r.v) ? 'list' : ['ledger', 'reports'].includes(r.v) ? 'home' : r.v);
   if (r.v === 'gecko' || r.v === 'pub') drawChart();
   if (r.v === 'setup') wireSetup();
   if (r.v === 'map') drawMap();
@@ -531,6 +567,7 @@ function vPublic(id, preview) {
       <div class="dsub"><span class="sex ${sx.c}">${sx.s} ${sx.t}</span> · ${esc(pg.morph || '모프 미기록')}</div>
       ${vis.hatch ? `<dl class="facts"><dt>해칭일</dt><dd>${esc(hatchText(pg))} <span class="muted">${esc(hatchAge(pg))}</span></dd></dl>` : ''}
     </div></section>`;
+  if (d.listing) h += listingPanel(d.listing, d.shop);
   if (vis.lineage) {
     const pref = n => !n ? {kind:'none'} : n.kind === 'id' ? {kind:'id', g:{id:n.id, code:n.code || '', name:n.name || '', morph:n.morph || '', sex:n.sex || 'u', photo:n.photo, _pub:true, _fb:fb}}
       : n.kind === 'private' ? {kind:'ext', label:'비공개 개체'} : n.kind === 'ext' ? {kind:'ext', label:n.label} : {kind:'none'};
@@ -552,6 +589,81 @@ function vPublic(id, preview) {
   }
   if (vis.notes && d.notes) h += `<section class="panel"><div class="ph3"><h3>메모</h3></div><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(d.notes)}</p></section>`;
   h += `<footer class="pc-foot"><span>${APP_NAME} 공개 카드${farm ? ` · ${esc(farm.name || '')}에서 공개한 정보입니다` : ''}</span>${signIn}</footer></article>`;
+  return h;
+}
+
+/* ---------- 분양 페이지 (공개) ---------- */
+const LSTATE = { open:'분양 중', reserved:'예약 중' };
+const priceText = p => (p != null && p !== '' && +p > 0) ? fmtWon(p) : '가격 문의';
+const safeUrl = u => { u = String(u || '').trim(); if (!u) return ''; if (!/^https?:\/\//i.test(u)) u = 'https://' + u; try { const x = new URL(u); return /^https?:$/.test(x.protocol) && x.hostname.includes('.') ? x.href : ''; } catch { return ''; } };
+const instaUrl = v => { v = String(v || '').trim(); if (!v) return ''; const m = v.match(/instagram\.com\/([A-Za-z0-9._]+)/i); const h = (m ? m[1] : v.replace(/^@/, '')).replace(/[^A-Za-z0-9._]/g, ''); return h ? `https://www.instagram.com/${h}/` : ''; };
+const telNum = v => String(v || '').replace(/[^0-9+]/g, '');
+const shopUrl = fid => `${appUrl()}#shop-${fid}`;
+function contactBtns(c) {
+  if (!c) return '';
+  const out = [], k = safeUrl(c.kakao), i = instaUrl(c.insta), t = telNum(c.phone), l = safeUrl(c.link);
+  if (k) out.push(`<a class="btn primary" href="${esc(k)}" target="_blank" rel="noopener">카카오톡 문의</a>`);
+  if (i) out.push(`<a class="btn" href="${esc(i)}" target="_blank" rel="noopener">인스타그램</a>`);
+  if (t) out.push(`<a class="btn" href="tel:${esc(t)}">전화</a><a class="btn" href="sms:${esc(t)}">문자</a>`);
+  if (l) out.push(`<a class="btn" href="${esc(l)}" target="_blank" rel="noopener">스토어·홈페이지</a>`);
+  return out.length ? `<div class="actions contact">${out.join('')}</div>` : '';
+}
+const LAW_NOTE = '파충류·양서류를 주고받으면(무료 분양 포함) 분양하는 분과 받는 분 모두 야생동물 양도·양수 신고를 해야 합니다.';
+function listingPanel(l, shop) {
+  return `<section class="panel listing pop"><div class="ph3"><h3>${LSTATE[l.state] || '분양 중'}</h3><span class="price">${esc(priceText(l.price))}</span></div>
+    ${l.note ? `<p class="l-note">${esc(l.note)}</p>` : ''}
+    ${shop ? contactBtns(shop) : ''}
+    ${shop ? `<a class="more" href="#shop-${esc(shop.id)}">${esc(shop.name || '')}의 분양 개체 모두 보기 →</a>` : ''}
+    <p class="hint">거래는 분양하는 분과 직접 진행합니다. ${LAW_NOTE}</p></section>`;
+}
+async function fetchShop(fid) {
+  if (S.shopLoading.has(fid) || !sb) return;
+  S.shopLoading.add(fid);
+  try {
+    const d = await q(sb.rpc('public_shop', {fid}));
+    if (d && !d.closed) await signUrls([d.logo, ...(d.items || []).map(x => x.photo)]);
+    S.shop.set(fid, {data:d});
+  } catch (e) { S.shop.set(fid, {err:errMsg(e)}); }
+  S.shopLoading.delete(fid); schedule();
+}
+function vShop(fid) {
+  if (!sb) return loadingHTML();
+  const c = S.shop.get(fid);
+  if (!c) { fetchShop(fid); return loadingHTML('분양 페이지를 불러오는 중…'); }
+  if (c.err) return `<div class="empty"><h2>분양 페이지를 불러오지 못했습니다</h2><p>${esc(c.err)}</p><button class="btn" data-act="shop-retry" data-id="${esc(fid)}">다시 시도</button></div>`;
+  const d = c.data;
+  if (!d) return `<div class="empty"><h2>분양 페이지를 찾을 수 없습니다</h2><p>주소가 바뀌었거나 없어진 페이지입니다.</p></div>`;
+  if (d.closed) return `<div class="empty"><h2>${esc(d.name || '')} 분양 페이지가 닫혀 있습니다</h2><p>지금은 분양 페이지를 쓰지 않고 있습니다.</p></div>`;
+  document.title = `${d.name} 분양`;
+  const spl = (d.species || []).map(spInfo).filter(Boolean);
+  const spOfK = k => spl.find(x => x.k === k) || SPK[k] || {k, n:'기타', c:'reptile'};
+  const items = d.items || [];
+  const kinds = [...new Set(items.map(x => x.species || 'crested'))];
+  let sel = S.shopSp.get(fid) || 'all'; if (sel !== 'all' && !kinds.includes(sel)) sel = 'all';
+  const shown = items.filter(x => sel === 'all' || (x.species || 'crested') === sel);
+  const logo = d.logo && S.urls.get(d.logo);
+  const mine = S.auth === 'in' && S.farms.some(x => x.id === d.id);
+  let h = mine ? `<div class="notice"><p><b>내 분양 페이지</b> · 링크를 받은 분에게 이렇게 보입니다. 개체 화면의 <b>분양 등록</b>으로 개체를 올리거나 내릴 수 있습니다.</p><a class="btn small" href="#setup">설정으로</a></div>` : '';
+  h += `<article class="shop"><header class="panel pop shop-h">
+      <div class="shop-id">${logo ? `<img class="shop-logo" data-ph src="${esc(logo)}" alt="">` : `<span class="shop-logo ini">${esc((d.name || '?').slice(0, 1))}</span>`}
+        <div><span class="pc-k">${d.unit === '브랜드' ? '브리더' : esc(d.unit || '')} · 분양</span><h1>${esc(d.name || '')}</h1></div></div>
+      ${d.intro ? `<p class="shop-intro">${esc(d.intro)}</p>` : ''}
+      ${contactBtns(d.contact)}
+    </header>`;
+  if (kinds.length > 1) h += `<div class="seg shop-seg">${[['all', '전체', items.length], ...kinds.map(k => [k, spOfK(k).n, items.filter(x => (x.species || 'crested') === k).length])].map(([k, t, n]) => `<button data-act="shop-sp" data-id="${esc(fid)}" data-v="${esc(k)}" aria-pressed="${sel === k}">${esc(t)}<span class="n">${n}</span></button>`).join('')}</div>`;
+  if (!shown.length) h += `<div class="empty"><h2>지금 분양 중인 개체가 없습니다</h2><p>새 개체가 올라오면 이곳에 보입니다.</p></div>`;
+  else h += `<div class="shop-grid">${shown.map(x => {
+    const sp = spOfK(x.species || 'crested'), sx = SEX[x.sex || 'u'];
+    const pg = {id:x.id, code:x.code || '', name:x.name || '', morph:x.morph || '', photo:x.photo, species:x.species, _spc:sp.c, _pub:true, _fb:''};
+    const age = x.hatch_date ? hatchAge({hatchDate:x.hatch_date, hatchMode:x.hatch_mode}) : '';
+    return `<a class="scard" href="#g-${esc(x.id)}">${photoTag(pg, 'sc-img')}<span class="sc-b">
+        ${kinds.length > 1 || sp.k !== 'crested' ? `<span class="sc-sp">${esc(sp.n)}</span>` : ''}
+        <span class="sc-t">${x.code ? `<span class="mono">${esc(x.code)}</span> ` : ''}${esc(x.name || x.morph || '')}</span>
+        <span class="sc-m"><span class="sex ${sx.c}">${sx.s} ${sx.t}</span>${x.morph && x.name ? ` · ${esc(x.morph)}` : ''}${age ? ` · ${esc(age)}` : ''}</span>
+        <span class="sc-p"><b>${esc(priceText(x.price))}</b>${x.state === 'reserved' ? '<span class="pill warn">예약 중</span>' : ''}</span>
+      </span></a>`;
+  }).join('')}</div>`;
+  h += `<footer class="pc-foot"><span>${APP_NAME}로 만든 분양 페이지 · 개체를 누르면 혈통 등 자세한 정보를 볼 수 있습니다.</span><span>거래는 분양하는 분과 직접 진행합니다. ${LAW_NOTE}</span></footer></article>`;
   return h;
 }
 
@@ -715,6 +827,11 @@ function vHome() {
     const ii = incInfo(c);
     ck += `<a class="ck egg" href="#breeding"><span class="ic">${EGG}</span><span class="tx">${ii.left >= 0 ? `알 ${+c.eggs || 0}개, 해칭까지 <b>${ii.left === 0 ? '오늘' : ii.left + '일'}</b>` : `예상 해칭일이 <b>${-ii.left}일</b> 지났어요`}<small>${esc(refName(c.damId))} × ${esc(refName(c.sireId, c.sireExt, c.sireNone))}</small></span>${CHEV}</a>`;
   }
+  const rp = can('admin') ? reportItems().filter(x => !x.done) : [];
+  if (rp.length) {
+    const late = rp.filter(x => x.due < td).length, first = rp[0];
+    ck += `<a class="ck rpt${late ? ' miss' : ''}" href="#reports"><span class="ic">${SVG_DOC}</span><span class="tx">야생동물 신고할 일 <b>${rp.length}건</b>${late ? ` <span class="miss-n">(기한 지남 ${late}건)</span>` : ''}<small>${esc(RPT[first.t])} · ${esc(first.g.name || first.g.code || gTitle(first.g))} · ${fmtShort(first.due)}까지</small></span>${CHEV}</a>`;
+  }
   if (stale.length) ck += `<a class="ck scale" href="#list"><span class="ic">${SVG_SCALE}</span><span class="tx">몸무게 기록이 30일 넘은 개체 <b>${stale.length}마리</b><small>${esc(namesOf(stale))}</small></span>${CHEV}</a>`;
   if (!ck) ck = `<div class="ck ok"><span class="ic">${SVG_OK}</span><span class="tx">지금 확인할 일이 없어요</span></div>`;
   const check = `<section class="panel pop" aria-label="Check"><div class="check-h"><h2>Check</h2>${total ? `<span class="ck-badge">${done.length} / ${total} 완료</span>` : ''}</div><div class="cks">${ck}</div>
@@ -734,6 +851,33 @@ function vHome() {
   const right = (feat('breeding') ? incs : '') + (can('admin') && feat('ledger') ? homeMoney() : '');
   h += `<div class="home-grid${right ? '' : ' one'}"><div class="col2">${check}${fr}</div>${right ? `<div class="col2">${right}</div>` : ''}</div>
     <div class="home-foot"><a class="btn" href="#list">개체 ${act.length}마리 모두 보기</a></div></div>`;
+  return h;
+}
+
+/* ---------- 신고 도우미 화면 ---------- */
+const SVG_DOC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/></svg>';
+function vReports() {
+  if (!S.loaded.g) return loadingHTML();
+  if (!can('admin')) return `<div class="empty"><h2>신고 도우미는 관리자만 볼 수 있습니다</h2><a class="btn" href="#home">홈으로</a></div>`;
+  const all = reportItems(), todo = all.filter(x => !x.done), done = all.filter(x => x.done).sort((a, b) => b.done.localeCompare(a.done)).slice(0, 30);
+  const who = x => { const g = x.g, s = g.sale || {};
+    return x.t === 'out' ? `분양일 ${fmtD(x.date)}${s.to ? ` · 받는 분 ${esc(s.to)}` : ''}${s.contact ? ` · ${esc(s.contact)}` : ''}`
+      : x.t === 'in' ? `입양일 ${fmtD(x.date)}${g.sourceNote ? ` · ${esc(g.sourceNote)}` : ''}` : `사망일 ${fmtD(x.date)}`; };
+  const row = (x, isDone) => `<li class="rp-row"><span class="rp-t pill ${x.t}">${RPT[x.t]}</span>
+      <span class="rp-b"><a href="#g-${x.g.id}"><b>${esc(gLabel(x.g))}</b>${multiSp() ? ` <span class="muted">${esc(spOf(x.g).n)}</span>` : ''}</a><small>${who(x)}</small></span>
+      <span class="rp-d">${isDone ? `<small>${fmtD(x.done)} 신고함</small>` : `<small>${fmtD(x.due)}까지</small>${dueText(x.due)}`}</span>
+      <span class="rp-a">${isDone ? `<button class="icon-btn" data-act="report-undo" data-id="${x.g.id}" data-t="${x.t}">되돌리기</button>` : `<button class="btn small primary" data-act="report-done" data-id="${x.g.id}" data-t="${x.t}">신고했어요</button>`}</span></li>`;
+  let h = `<a class="back" href="#home">← 홈</a><div class="vhead"><div><h1 class="vtitle">신고 도우미</h1><p class="vsub">분양·입양·폐사 때 야생동물 신고 기한을 챙깁니다.</p></div>
+    <div class="actions"><a class="btn primary" href="${WIMS_URL}" target="_blank" rel="noopener">야생동물종합관리시스템 열기</a></div></div>`;
+  h += `<section class="panel"><div class="ph3"><h3>해야 할 신고</h3><span class="hint">${todo.length}건</span></div>${todo.length ? `<ul class="rows rp-list">${todo.map(x => row(x, false)).join('')}</ul>` : '<p class="muted">지금 해야 할 신고가 없습니다.</p>'}</section>`;
+  if (done.length) h += `<section class="panel"><div class="ph3"><h3>신고한 기록</h3></div><ul class="rows rp-list">${done.map(x => row(x, true)).join('')}</ul></section>`;
+  h += `<section class="panel rp-info"><div class="ph3"><h3>알아 두기</h3></div><ul class="dots">
+      <li>2025년 12월 14일부터 파충류·양서류 등 야생동물을 주고받으면(무료 분양 포함) <b>분양하는 분과 받는 분 모두</b> 양도·양수 신고를 합니다. 한 달 동안의 거래를 <b>다음 달 10일까지</b> 신고합니다.</li>
+      <li>죽었을 때는 <b>사망일부터 30일 이내</b>에 폐사 신고를 합니다.</li>
+      <li>백색목록 종을 보관 신고한 뒤 직접 번식한 새끼는 따로 신고하지 않아도 된다고 안내되어 있어, 출처가 ‘자가 해칭’인 개체는 목록에 넣지 않습니다.</li>
+      <li>입양일·분양일·사망일이 적힌 개체만 계산합니다. 2025년 12월 14일 이전 거래는 넣지 않습니다.</li>
+      <li>신고 대상인지와 정확한 기한은 종과 지역에 따라 다를 수 있으니 시스템의 ‘생물종정보’와 관할 시·군·구에서 확인해 주세요. 이 화면은 기록과 알림을 돕는 도구이며 법령 해석이 아닙니다. (2026년 1월 지자체 안내 기준)</li>
+    </ul></section>`;
   return h;
 }
 
@@ -924,6 +1068,7 @@ function card(g) {
   const sub = [multiSp() ? spOf(g).n : null, g.name ? (g.morph || '모프 미기록') : null, hatchAge(g) || null].filter(Boolean).join(' · ');
   let pills = w ? `<span class="pill">${fmtG(w.g)} g</span>` : '';
   if (st !== 'active') pills += `<span class="pill">${STATUS[st]}</span>`;
+  else if (g.listing) pills += `<span class="pill sun">${LSTATE[g.listing.state] || '분양 중'}</span>`;
   else {
     pills += fi.sched.mode === 'none' ? (fi.days == null ? '' : fi.days === 0 ? `<span class="pill good">오늘 급여함</span>` : `<span class="pill">급여 D+${fi.days}</span>`)
       : fi.days == null ? `<span class="pill bad">급여 기록 없음</span>`
@@ -952,12 +1097,13 @@ function vGecko(id) {
     <div class="ph">${photoUrl(g) ? `<img class="hero-photo" data-ph src="${esc(photoUrl(g))}" alt="${esc(gTitle(g))} 사진">`
       : `<div class="hero-photo ph-empty ${tone(g)}${fallbackFor(g) ? ' has-fb' : ''}">${fallbackFor(g) ? `<img data-ph src="${esc(fallbackFor(g))}" alt="" referrerpolicy="no-referrer">` : phIcon(g)}<span class="ph-tag">사진 없음</span>${can('admin') ? `<button class="btn small ph-add" data-act="edit-gecko" data-id="${id}">+ 사진 추가</button>` : ''}</div>`}</div>
     <div class="dinfo">
-      <div class="dcode"><span>${esc(g.code || '번호 없음')}</span>${g.sample ? '<span class="tag">예시</span>' : ''}${st !== 'active' ? `<span class="pill">${STATUS[st]}</span>` : ''}${g.publicOn ? '' : '<span class="pill">공개 카드 꺼짐</span>'}</div>
+      <div class="dcode"><span>${esc(g.code || '번호 없음')}</span>${g.sample ? '<span class="tag">예시</span>' : ''}${st !== 'active' ? `<span class="pill">${STATUS[st]}</span>` : ''}${st === 'active' && g.listing ? `<span class="pill sun">${LSTATE[g.listing.state] || '분양 중'} · ${esc(priceText(g.listing.price))}</span>` : ''}${g.publicOn ? '' : '<span class="pill">공개 카드 꺼짐</span>'}</div>
       <h1 class="dname">${esc(gTitle(g))}</h1>
       <div class="dsub">${multiSp() ? `<span class="sp-n">${esc(spOf(g).n)}</span> · ` : ''}<span class="sex ${sx.c}">${sx.s} ${sx.t}</span>${g.sexAt ? ` <span class="muted">(${fmtD(g.sexAt)} 확인)</span>` : ''} · ${esc(g.morph || '모프 미기록')}</div>
       <dl class="facts">
         <dt>해칭일</dt><dd>${esc(hatchText(g))} <span class="muted">${esc(hatchAge(g))}</span></dd>
         <dt>입양일</dt><dd>${fmtD(g.acquiredDate)}</dd>
+        ${st === 'dead' ? `<dt>사망일</dt><dd>${fmtD(g.diedAt)}</dd>` : ''}
         <dt>출처</dt><dd>${esc(src)}</dd>
         ${st === 'active' ? `<dt>급여</dt><dd>${fi.sched.mode === 'none' ? '알림 없음 <span class="muted">(기록만)</span>' : fi.sched.mode === 'weekdays' ? `${wdText(fi.sched.days)} <span class="muted">${fi.sched.own ? '(이 개체만)' : '(기본 요일)'}</span>` : `${fi.sched.limit}일마다 확인 <span class="muted">${fi.sched.own ? '(이 개체만)' : '(기본 설정)'}</span>`}${fi.state === 'missed' ? ' <span class="pill bad">급여 놓침</span>' : fi.state === 'today' ? ' <span class="pill warn">오늘 급여일</span>' : fi.next ? ` <span class="muted">· 다음 ${fmtShort(fi.next)}(${WD[wdOf(fi.next)]})</span>` : ''}</dd>` : ''}
       </dl>
@@ -965,10 +1111,12 @@ function vGecko(id) {
         <button class="btn" data-act="edit-gecko" data-id="${id}">정보 수정</button>
         <button class="btn" data-act="qr" data-id="${id}">QR 라벨</button>
         <a class="btn" href="#pub-${id}">공개 카드 보기</a>
+        ${st === 'active' && shopOn() ? `<button class="btn" data-act="listing" data-id="${id}">${g.listing ? '분양 글 수정' : '분양 등록'}</button>` : ''}
         ${st === 'active' ? `<button class="btn" data-act="sale" data-id="${id}">분양 처리</button>` : ''}
       </div>
     </div>
   </section>
+  ${can('admin') ? reportItems().filter(x => x.g.id === id && !x.done).map(x => `<div class="notice rpt${x.due < today() ? ' late' : ''}"><p><b>${RPT[x.t]}가 필요합니다</b> · ${fmtD(x.due)}까지 ${dueText(x.due)}</p><span class="acts"><button class="btn small primary" data-act="report-done" data-id="${id}" data-t="${x.t}">신고했어요</button><a class="btn small" href="#reports">신고 도우미</a></span></div>`).join('') : ''}
   ${st === 'ref' ? `<div class="notice"><p><b>혈관리용 개체입니다.</b> 내 보유 개체가 아니라 혈통도를 잇기 위해 등록한 개체라서 보유 목록·급여 알림·분양 목록에는 나오지 않습니다.</p></div>` : ''}
   <section class="qlog" aria-label="빠른 기록"${st === 'ref' ? ' hidden' : ''}>${['feed', 'weight', 'shed', 'poop', 'note'].map(t => `<button class="qbtn${t === 'feed' ? ' hot' : ''}" data-act="log" data-t="${t}" data-id="${id}"><span class="qi">${QICON[t]}</span>${LOGT[t]}</button>`).join('')}</section>
   <section class="stats" aria-label="최근 상태"${st === 'ref' ? ' hidden' : ''}>
@@ -1236,6 +1384,7 @@ function vSales() {
 }
 
 /* ---------- setup ---------- */
+const shopLinkBox = () => `<div class="shop-link"><input id="shop-link" readonly value="${esc(shopUrl(S.farm.id))}" aria-label="분양 페이지 링크"><div class="actions"><button type="button" class="btn small primary" data-act="shop-copy">링크 복사</button>${navigator.share ? '<button type="button" class="btn small" data-act="shop-share">보내기</button>' : ''}<a class="btn small" href="#shop-${esc(S.farm.id)}">페이지 보기</a></div></div>`;
 const roleOpts = cur => Object.entries(ROLE).map(([k, t]) => `<option value="${k}"${cur === k ? ' selected' : ''}>${t}</option>`).join('');
 const inviteLink = code => `${appUrl()}#join-${code}`;
 function vSetup() {
@@ -1246,10 +1395,11 @@ function vSetup() {
   const gAvatar = S.user && S.user.user_metadata && (S.user.user_metadata.avatar_url || S.user.user_metadata.picture);
   let h = `<div class="vhead"><div><h1 class="vtitle">설정</h1><p class="vsub">${esc(f.name)} · 내 권한: <b>${ROLE[S.role]}</b></p></div></div>`;
   if (admin) {
-    const u = U(), refN = [...S.geckos.values()].filter(g => gStatus(g) === 'ref').length;
+    const u = U(), refN = [...S.geckos.values()].filter(g => gStatus(g) === 'ref').length, sc = shopCfg();
     const FEATS = [
       ['breeding', '브리딩', '메이팅·산란·인큐베이터·해칭 기록, 메뉴의 브리딩 탭, 홈의 인큐베이터'],
       ['ledger', '가계부', '수입·지출 기록, 홈의 이번 달 가계부, 개체별 손익, 입양가 입력. 관리자만 봅니다'],
+      ['report', '신고 도우미', '분양·입양·폐사 때 야생동물 양도·양수·폐사 신고 기한을 Check에 알려 줍니다'],
       ['ref', '혈관리용 개체', `내 개체가 아닌 부모·조부모를 등록해 혈통을 잇는 기능. 끄면 목록의 혈관리용 탭과 등록 버튼이 숨겨집니다${refN ? `. 이미 등록한 ${refN}마리는 혈통도에 그대로 보입니다` : ''}`]
     ];
     h += `<form id="setform" class="panel form" novalidate>
@@ -1265,6 +1415,17 @@ function vSetup() {
       <div class="ph3"><h3>사용할 기능</h3></div>
       <p class="hint">쓰지 않는 기능은 꺼 두면 메뉴와 화면에서 숨겨집니다. 꺼도 기록은 지워지지 않고, 다시 켜면 그대로 보입니다.</p>
       <div class="feats">${FEATS.map(([k, t, d]) => `<label class="feat"><span class="ft"><b>${t}</b><small>${d}</small></span><input type="checkbox" name="s-feat" value="${k}"${feat(k) ? ' checked' : ''} aria-label="${t} 사용"></label>`).join('')}</div>
+      <div class="ph3"><h3>분양 페이지</h3></div>
+      <div class="feats"><label class="feat"><span class="ft"><b>분양 페이지 사용</b><small>개체 화면에서 ‘분양 등록’한 개체를 모아 보여 주는 공개 페이지입니다. 로그인 없이 볼 수 있어 인스타그램 프로필이나 카카오톡에 링크를 걸어 두기 좋습니다.</small></span><input type="checkbox" id="s-shop"${sc.on ? ' checked' : ''} aria-label="분양 페이지 사용"></label></div>
+      <div id="s-shop-f"${sc.on ? '' : ' hidden'}>
+        <div class="field"><label for="s-shop-intro">소개 글</label><textarea id="s-shop-intro" rows="3" maxlength="500" placeholder="예: 크레스티드 게코 전문 브리더입니다. 분양 문의는 카카오톡으로 주세요.">${esc(sc.intro || '')}</textarea></div>
+        <div class="grid2"><div class="field"><label for="s-shop-kakao">카카오톡 오픈채팅 주소</label><input id="s-shop-kakao" value="${esc(sc.kakao || '')}" placeholder="https://open.kakao.com/o/…" autocomplete="off" inputmode="url"></div>
+          <div class="field"><label for="s-shop-insta">인스타그램 아이디</label><input id="s-shop-insta" value="${esc(sc.insta || '')}" placeholder="예: @amazing_crace" autocomplete="off"></div></div>
+        <div class="grid2"><div class="field"><label for="s-shop-phone">전화번호 (선택)</label><input id="s-shop-phone" value="${esc(sc.phone || '')}" placeholder="비워 두면 표시하지 않음" autocomplete="off" inputmode="tel"></div>
+          <div class="field"><label for="s-shop-link">스토어·홈페이지 주소 (선택)</label><input id="s-shop-link" value="${esc(sc.link || '')}" placeholder="https://…" autocomplete="off" inputmode="url"></div></div>
+        <p class="hint">적은 연락처는 분양 페이지와 분양 중인 개체의 공개 카드에 누구나 볼 수 있게 표시됩니다. 거래와 결제는 앱 밖에서 직접 진행하며, 앱은 소개와 연결만 돕습니다.</p>
+        ${sc.on ? shopLinkBox() : '<p class="hint">켜고 설정 저장을 누르면 이곳에 분양 페이지 링크가 생깁니다.</p>'}
+      </div>
       <div class="ph3"><h3>키우는 종류</h3></div>
       <p class="hint">개체를 등록할 때 고르는 종류입니다. <b>크레형</b>을 켠 종류는 크레스티드 게코처럼 기본 급여 요일 알림·무게 알림·브리딩을 함께 쓰고, 끈 종류는 <b>기본 관리</b>(기록·사진·혈통·QR은 같고, 급여 알림은 개체마다 정한 주기가 있을 때만)로 관리합니다. 종류가 하나뿐이면 화면에 종류가 표시되지 않습니다.</p>
       <div id="sp-box"></div>
@@ -1287,7 +1448,7 @@ function vSetup() {
       <div class="sh-foot"><button class="btn primary" type="submit" id="s-save">설정 저장</button></div>
     </form>`;
   } else {
-    h += `<section class="panel"><div class="ph3"><h3>${U()}</h3></div><div class="farmline">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : ''}<b>${esc(f.name)}</b></div><p class="hint">이름·기능·공개 설정은 관리자만 바꿀 수 있습니다.</p></section>`;
+    h += `<section class="panel"><div class="ph3"><h3>${U()}</h3></div><div class="farmline">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : ''}<b>${esc(f.name)}</b></div><p class="hint">이름·기능·공개 설정은 관리자만 바꿀 수 있습니다.</p>${shopOn() ? `<div class="lbl" style="margin-top:6px">분양 페이지</div>${shopLinkBox()}` : ''}</section>`;
   }
   h += `<section class="panel"><div class="ph3"><h3>구성원</h3><span class="hint">${S.members.length}명</span></div>
     <ul class="rows">${S.members.map(m => {
@@ -1404,6 +1565,7 @@ function wireSetup() {
     finally { save.disabled = false; lf.value = ''; }
   });
   wireUnit(f, 's-unit', '#s-name-l', '#s-name');
+  const shopSw = $('#s-shop'); shopSw.addEventListener('change', () => { $('#s-shop-f').hidden = !shopSw.checked; });
   // 키우는 종류 편집 (설정 저장을 눌러야 반영)
   const spList = farmSpecies().map(x => ({k:x.k, care:x.care, p:x.p || '', n:x.n, c:x.c}));
   const spBox = $('#sp-box');
@@ -1462,6 +1624,10 @@ function wireSetup() {
     const unit = (f.querySelector('input[name=s-unit]:checked') || {}).value || '가족';
     const fe = {...(S.farm.features || {}), unit, ...Object.fromEntries([...f.querySelectorAll('input[name=s-feat]')].map(i => [i.value, i.checked]))};
     // 데이터베이스가 2.4판 전이면(features 칸 없음) 기능 설정은 빼고 저장
+    const kakao = $('#s-shop-kakao').value.trim(), link = $('#s-shop-link').value.trim();
+    if (kakao && !safeUrl(kakao)) { err.textContent = '카카오톡 오픈채팅 주소를 다시 확인해 주세요. 예: https://open.kakao.com/o/…'; err.hidden = false; return; }
+    if (link && !safeUrl(link)) { err.textContent = '스토어·홈페이지 주소를 다시 확인해 주세요.'; err.hidden = false; return; }
+    fe.shop = {on:shopSw.checked, intro:$('#s-shop-intro').value.trim(), kakao:kakao ? safeUrl(kakao) : '', insta:$('#s-shop-insta').value.trim(), phone:$('#s-shop-phone').value.trim(), link:link ? safeUrl(link) : ''};
     fe.species = spList.map(e => { const o = {k:e.k, care:e.care === 'full' ? 'full' : 'basic'}; if (e.p) o.p = e.p; if (!SPK[e.k]) { o.n = e.n; o.c = e.c; } return o; });
     const features = S.farm.features === undefined ? {} : {features:fe};
     const btn = $('#s-save'); btn.disabled = true; btn.textContent = '저장 중…';
@@ -1474,7 +1640,7 @@ function wireSetup() {
         updated_at:new Date().toISOString()
       }).eq('id', S.farm.id));
       if (old && old !== logoPath) sb.storage.from('photos').remove([old]).catch(() => {});
-      S.setupDirty = false; toast('설정을 저장했습니다'); await refresh();
+      S.setupDirty = false; S.shop.delete(S.farm.id); toast('설정을 저장했습니다'); await refresh();
     } catch (e) { err.textContent = errMsg(e); err.hidden = false; btn.disabled = false; btn.textContent = '설정 저장'; }
   });
 }
@@ -1636,7 +1802,8 @@ function openGeckoForm(id, pre = {}) {
     <div class="grid2"><div class="field"><label for="f-srcn">입양처 · 비고</label><input id="f-srcn" value="${esc(v.sourceNote || '')}" autocomplete="off"></div>
       ${isRef || !feat('ledger') ? '' : `<div class="field"><label for="f-price">입양가 (원)</label><input id="f-price" inputmode="numeric" autocomplete="off" placeholder="선택" value="${v.acquiredPrice ? Number(v.acquiredPrice).toLocaleString('ko-KR') : ''}"><p class="hint">가계부에 ‘개체 입양’ 지출로 들어갑니다.</p></div>`}</div>
     <fieldset class="fs"><legend>혈통 (부모)</legend>${parentField('sire')}${parentField('dam')}<p class="hint">목록에 있는 개체를 고르면 조부모까지 혈통도가 이어집니다.</p></fieldset>
-    ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS_OPT).filter(([k]) => k !== 'ref' || feat('ref') || gStatus(g) === 'ref').map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
+    ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS_OPT).filter(([k]) => k !== 'ref' || feat('ref') || gStatus(g) === 'ref').map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="field" id="f-died-f"${gStatus(g) === 'dead' ? '' : ' hidden'}><label for="f-died">사망일</label><input id="f-died" type="date" value="${esc(v.diedAt || '')}" max="${today()}">${feat('report') ? '<p class="hint">신고 도우미가 폐사 신고 기한(30일)을 계산합니다.</p>' : ''}</div>` : ''}
     <div class="field"><label for="f-notes">메모</label><textarea id="f-notes" rows="3">${esc(v.notes || '')}</textarea></div>
     ${isRef ? '' : `<fieldset class="fs"><legend>급여 확인</legend>
       <div class="seg radio">${[['def', '기본 설정'], ['wd', '요일 지정'], ['every', '며칠마다']].map(([k, t]) => `<label><input type="radio" name="f-fm" value="${k}"${feedMode0 === k ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div>
@@ -1691,6 +1858,8 @@ function openGeckoForm(id, pre = {}) {
     if (autoCode !== null && code.value === autoCode) { autoCode = nextCode(curSp); code.value = autoCode; }
     sh.querySelectorAll('select[data-ext]').forEach(sel => { const keep = sel.value; sel.innerHTML = parentOpts(sel.dataset.role); if ([...sel.options].some(o => o.value === keep)) sel.value = keep; sel.dataset.prev = sel.value; });
   });
+  const fst = sh.querySelector('#f-status');
+  if (fst) fst.addEventListener('change', () => { const dead = fst.value === 'dead'; sh.querySelector('#f-died-f').hidden = !dead; const di = sh.querySelector('#f-died'); if (dead && !di.value) di.value = today(); });
   const pd = sh.querySelector('#f-pubdef');
   pd.addEventListener('change', () => { sh.querySelector('#f-pubf').hidden = pd.checked; });
   const fp = sh.querySelector('#f-photo');
@@ -1740,7 +1909,12 @@ function openGeckoForm(id, pre = {}) {
     if (!row.code && !row.name) return showErr(sh, '개체번호나 이름 중 하나는 입력해 주세요.');
     if (row.code) { const dup = [...S.geckos.values()].find(x => x.id !== id && (x.code || '').toLowerCase() === row.code.toLowerCase()); if (dup) return showErr(sh, `개체번호 ${row.code}는 이미 ${gTitle(dup)}에게 쓰이고 있습니다.`); }
     if (row.sire_id && row.sire_id === row.dam_id) return showErr(sh, '부와 모가 같은 개체입니다.');
-    if (g) row.status = fval(sh, 'f-status') || gStatus(g);
+    if (g) {
+      row.status = fval(sh, 'f-status') || gStatus(g);
+      if (row.status === 'dead') row.died_at = fval(sh, 'f-died') || today();
+      else if (g.diedAt) row.died_at = null;
+      if (row.status !== 'active' && g.listing) row.listing = null;
+    }
     const btn = sh.querySelector('#f-save'); busy(btn, true);
     try {
       lsSet('gk.sp', curSp);
@@ -1848,7 +2022,8 @@ function openSaleForm(id) {
     <div class="grid2"><div class="field"><label for="s-to">분양받은 분</label><input id="s-to" value="${esc(s.to || '')}" autocomplete="off"></div>
       <div class="field"><label for="s-contact">연락처</label><input id="s-contact" value="${esc(s.contact || '')}" autocomplete="off" placeholder="선택"></div></div>
     <div class="field"><label for="s-note">메모</label><textarea id="s-note" rows="2">${esc(s.note || '')}</textarea></div>
-    <p class="hint">저장하면 상태가 ‘분양 완료’로 바뀌고 보유 목록에서 빠집니다. 기록과 혈통 정보는 그대로 남습니다.</p>
+    <p class="hint">저장하면 상태가 ‘분양 완료’로 바뀌고 보유 목록${g.listing ? '과 분양 페이지' : ''}에서 빠집니다. 기록과 혈통 정보는 그대로 남습니다.</p>
+    ${feat('report') ? `<p class="hint">${LAW_NOTE} 분양한 달의 다음 달 10일까지이며, 신고 도우미에서 기한을 알려 드립니다.</p>` : ''}
     <p class="err" hidden></p>
     <div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="s-save">저장</button></div></form>`, {label:'분양 처리'});
   sh.querySelector('#sform').addEventListener('submit', async ev => {
@@ -1857,7 +2032,9 @@ function openSaleForm(id) {
     const pr = fval(sh, 's-price');
     const btn = sh.querySelector('#s-save'); busy(btn, true);
     try {
-      await q(sb.from('geckos').update({status:'sold', sale:{date, price:pr ? Math.round(+pr) : null, to:fval(sh, 's-to'), contact:fval(sh, 's-contact'), note:sh.querySelector('#s-note').value.trim()}, updated_at:new Date().toISOString()}).eq('id', id));
+      const up = {status:'sold', sale:{date, price:pr ? Math.round(+pr) : null, to:fval(sh, 's-to'), contact:fval(sh, 's-contact'), note:sh.querySelector('#s-note').value.trim()}, updated_at:new Date().toISOString()};
+      if (g.listing) up.listing = null;
+      await q(sb.from('geckos').update(up).eq('id', id));
       closeSheet(); toast('분양 정보를 저장했습니다'); await refresh();
     } catch (e) { busy(btn, false); showErr(sh, errMsg(e)); }
   });
@@ -1867,6 +2044,35 @@ async function cancelSale(id) {
   const ok = await confirmSheet('분양을 취소할까요?', `${esc(gLabel(g))}의 분양 정보를 지우고 다시 ‘보유 중’으로 돌립니다.`, '분양 취소', true);
   if (!ok) return;
   try { await q(sb.from('geckos').update({status:'active', sale:null}).eq('id', id)); toast('보유 중으로 돌렸습니다'); await refresh(); } catch (e) { toast(errMsg(e), 'bad'); }
+}
+
+/* ---------- 분양 등록 (분양 페이지에 올리기) ---------- */
+function openListingForm(id) {
+  const g = G(id); if (!g) return; const l = g.listing || {}, st = l.state || 'open';
+  const warn = !g.publicOn ? '<div class="notice warn"><p>이 개체는 <b>공개 카드가 꺼져 있어</b> 분양 페이지에 나오지 않습니다. 개체 정보 수정에서 공개 카드를 켜 주세요.</p></div>' : '';
+  const sh = openSheet(`<form class="form" id="lsform" novalidate>${sheetHead(g.listing ? '분양 글 수정' : '분양 등록')}
+    <p class="who">${esc(gLabel(g))}${g.morph ? ' · ' + esc(g.morph) : ''}</p>${warn}
+    <div class="field"><span class="lbl">상태</span><div class="seg radio">${Object.entries(LSTATE).map(([k, t]) => `<label><input type="radio" name="ls-st" value="${k}"${st === k ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div></div>
+    <div class="field"><label for="ls-price">분양가 (원)</label><input id="ls-price" inputmode="numeric" autocomplete="off" placeholder="비우면 ‘가격 문의’로 표시" value="${l.price ? Number(l.price).toLocaleString('ko-KR') : ''}"></div>
+    <div class="field"><label for="ls-note">소개 글</label><textarea id="ls-note" rows="4" maxlength="500" placeholder="예: 먹성 좋고 순해요. 현재 슈퍼푸드 단독 급여 중.">${esc(l.note || '')}</textarea></div>
+    <p class="hint">분양 페이지와 이 개체의 QR 공개 카드에 ‘분양 중’ 정보와 문의 버튼이 함께 보입니다. 사진·모프·성별·혈통 등은 공개 카드 설정을 따릅니다. 분양 처리를 하면 자동으로 내려갑니다.</p>
+    <p class="err" hidden></p>
+    <div class="sh-foot">${g.listing ? '<button type="button" class="btn danger" id="ls-del">분양 내리기</button>' : ''}<span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="ls-save">${g.listing ? '저장' : '분양 페이지에 올리기'}</button></div></form>`, {label:'분양 등록'});
+  sh.querySelector('#lsform').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const pv = fval(sh, 'ls-price').replace(/[^0-9]/g, ''), price = pv ? parseInt(pv, 10) : null;
+    if (price != null && price > 1e10) return showErr(sh, '분양가를 다시 확인해 주세요.');
+    const listing = {price, note:sh.querySelector('#ls-note').value.trim(), state:(sh.querySelector('input[name=ls-st]:checked') || {}).value || 'open', since:l.since || today()};
+    const btn = sh.querySelector('#ls-save'); busy(btn, true);
+    try { await q(sb.from('geckos').update({listing, updated_at:new Date().toISOString()}).eq('id', id)); closeSheet(); toast(g.listing ? '분양 글을 저장했습니다' : '분양 페이지에 올렸습니다'); S.shop.delete(S.farm.id); await refresh(); }
+    catch (e) { busy(btn, false); showErr(sh, errMsg(e)); }
+  });
+  const del = sh.querySelector('#ls-del');
+  if (del) del.addEventListener('click', async () => {
+    busy(del, true, '내리는 중…');
+    try { await q(sb.from('geckos').update({listing:null, updated_at:new Date().toISOString()}).eq('id', id)); closeSheet(); toast('분양 페이지에서 내렸습니다'); S.shop.delete(S.farm.id); await refresh(); }
+    catch (e) { busy(del, false); showErr(sh, errMsg(e)); }
+  });
 }
 
 /* ---------- pairing ---------- */
@@ -2320,6 +2526,13 @@ const ACT = {
     catch (e) { toast(errMsg(e), 'bad'); }
   },
   'pub-retry': t => { S.pub.delete(pubKey(t.dataset.id, !!t.dataset.preview)); render(); },
+  'shop-retry': t => { S.shop.delete(t.dataset.id); render(); },
+  'shop-sp': t => { S.shopSp.set(t.dataset.id, t.dataset.v); render(); },
+  'listing': t => openListingForm(t.dataset.id),
+  'report-done': t => markReport(t.dataset.id, t.dataset.t, true),
+  'report-undo': t => markReport(t.dataset.id, t.dataset.t, false),
+  'shop-copy': () => { const i = $('#shop-link'); if (i) copyText(i, '분양 페이지 링크를 복사했습니다'); },
+  'shop-share': async () => { try { await navigator.share({title:`${S.farm.name} 분양`, url:shopUrl(S.farm.id)}); } catch {} },
   'switch-farm': t => switchFarm(t.dataset.farm, t.dataset.go),
   'accept-invite': async t => {
     busy(t, true, '참여하는 중…');

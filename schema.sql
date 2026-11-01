@@ -1,4 +1,4 @@
--- 게코 관리노트 · Supabase 데이터베이스 구조 (2.5판: 가족·브랜드 단위 관리·구성원·공개 카드·혈관리용 개체·급여 요일·가계부·기능 켜기/끄기·여러 종류(파충류·양서류))
+-- 게코 관리노트 · Supabase 데이터베이스 구조 (2.6판: 가족·브랜드 단위 관리·구성원·공개 카드·혈관리용 개체·급여 요일·가계부·기능 켜기/끄기·여러 종류(파충류·양서류)·분양 페이지·신고 도우미)
 -- Supabase 관리 화면 → SQL Editor → New query 에 이 파일 전체를 붙여 넣고 Run 을 누르세요.
 -- 처음 설치할 때도, 1판에서 올릴 때도 같은 파일을 쓰면 됩니다. 여러 번 실행해도 안전합니다.
 -- 1판에서 올리면 기존 개체·기록·산란·메이팅·설정이 '우리 게코'로 자동으로 옮겨집니다.
@@ -166,6 +166,15 @@ update public.farms set name = '우리 게코' where name = '내 농장';
 --   feed_every: 이 개체만 '며칠마다' 급여 확인할 때의 날수 (예: 뱀 10일)
 alter table public.geckos add column if not exists species text not null default 'crested' check (char_length(species) between 1 and 40);
 alter table public.geckos add column if not exists feed_every int check (feed_every is null or feed_every between 1 and 90);
+
+-- 분양 페이지 · 신고 도우미 (2.6판)
+--   listing: 분양 등록 정보 {"price": 300000, "note": "소개", "state": "open"(분양 중) | "reserved"(예약 중), "since": "2026-11-02"}. 비어 있으면 분양 등록 안 함
+--   died_at: 사망(폐사)일 — 폐사 신고 기한 계산용
+--   reports: 신고한 날 {"in": 양수 신고, "out": 양도 신고, "dead": 폐사 신고}
+--   분양 페이지 사용 여부·소개·연락처는 farms.features 의 "shop" 에 저장합니다
+alter table public.geckos add column if not exists listing jsonb check (listing is null or jsonb_typeof(listing) = 'object');
+alter table public.geckos add column if not exists died_at date;
+alter table public.geckos add column if not exists reports jsonb not null default '{}' check (jsonb_typeof(reports) = 'object');
 
 -- 상태에 '혈관리용(ref)' 추가: 내 개체는 아니지만 혈통도를 잇기 위해 등록하는 개체
 alter table public.geckos drop constraint if exists geckos_status_check;
@@ -446,6 +455,13 @@ begin
         from public.logs l where l.gecko_id = g.id and l.type in ('feed', 'shed', 'poop')
         order by l.date desc, l.created_at desc limit 20) x), '[]'::jsonb));
   end if;
+  if g.status = 'active' and g.public_on and jsonb_typeof(g.listing) = 'object'
+     and coalesce((f.features #>> '{shop,on}')::boolean, false) then
+    res := res || jsonb_build_object(
+      'listing', jsonb_build_object('price', g.listing -> 'price', 'note', g.listing ->> 'note', 'state', coalesce(g.listing ->> 'state', 'open')),
+      'shop', jsonb_build_object('id', f.id, 'name', f.name, 'logo', f.logo_path,
+        'kakao', f.features #>> '{shop,kakao}', 'insta', f.features #>> '{shop,insta}', 'phone', f.features #>> '{shop,phone}', 'link', f.features #>> '{shop,link}'));
+  end if;
   if g.status = 'sold' and coalesce((vis ->> 'sale')::boolean, false) then
     res := res || jsonb_build_object('sale', jsonb_build_object('date', g.sale ->> 'date', 'price', g.sale -> 'price'));
   end if;
@@ -458,7 +474,41 @@ begin
   return res;
 end $$;
 
+-- 분양 페이지 (2.6판): 로그인 없이 볼 수 있는 브랜드별 분양 개체 목록
+--   분양 페이지를 켠 곳에서, 보유 중이고 공개 카드가 켜져 있으며 분양 등록한 개체만 보여 줍니다
+create or replace function public.public_shop(fid text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  f    public.farms;
+  shop jsonb;
+begin
+  select * into f from public.farms where id = fid;
+  if not found then return null; end if;
+  shop := case when jsonb_typeof(f.features -> 'shop') = 'object' then f.features -> 'shop' else '{}'::jsonb end;
+  if not coalesce((shop ->> 'on')::boolean, false) then
+    return jsonb_build_object('closed', true, 'name', f.name);
+  end if;
+  return jsonb_build_object(
+    'id', f.id, 'name', f.name, 'logo', f.logo_path, 'unit', coalesce(f.features ->> 'unit', '가족'),
+    'intro', shop ->> 'intro',
+    'contact', jsonb_build_object('kakao', shop ->> 'kakao', 'insta', shop ->> 'insta', 'phone', shop ->> 'phone', 'link', shop ->> 'link'),
+    'species', case when jsonb_typeof(f.features -> 'species') = 'array' then f.features -> 'species' else '[]'::jsonb end,
+    'items', coalesce((
+      select jsonb_agg(x.item order by x.since desc nulls last, x.code)
+      from (
+        select g.listing ->> 'since' as since, g.code,
+          jsonb_build_object(
+            'id', g.id, 'code', g.code, 'name', g.name, 'morph', g.morph, 'sex', g.sex, 'photo', g.photo_path, 'species', g.species,
+            'hatch_date', case when coalesce(((coalesce(f.public_defaults, '{}'::jsonb) || coalesce(g.public_fields, '{}'::jsonb)) ->> 'hatch')::boolean, false) then g.hatch_date end,
+            'hatch_mode', case when coalesce(((coalesce(f.public_defaults, '{}'::jsonb) || coalesce(g.public_fields, '{}'::jsonb)) ->> 'hatch')::boolean, false) then g.hatch_mode end,
+            'price', g.listing -> 'price', 'note', g.listing ->> 'note', 'state', coalesce(g.listing ->> 'state', 'open')) as item
+        from public.geckos g
+        where g.farm_id = f.id and g.status = 'active' and g.public_on and jsonb_typeof(g.listing) = 'object'
+      ) x), '[]'::jsonb));
+end $$;
+
 grant execute on function public.public_gecko(text, boolean) to anon, authenticated;
+grant execute on function public.public_shop(text)            to anon, authenticated;
 grant execute on function public.invite_info(text)            to anon, authenticated;
 grant execute on function public.create_farm(text, text)      to authenticated;
 grant execute on function public.accept_invite(text)          to authenticated;
