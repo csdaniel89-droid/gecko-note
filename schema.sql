@@ -1,14 +1,15 @@
--- 게코 관리노트 · Supabase 데이터베이스 구조 (2.3판: 농장·구성원·공개 카드·혈관리용 개체·급여 요일·가계부)
+-- 게코 관리노트 · Supabase 데이터베이스 구조 (2.4판: 가족·브랜드 단위 관리·구성원·공개 카드·혈관리용 개체·급여 요일·가계부·기능 켜기/끄기)
 -- Supabase 관리 화면 → SQL Editor → New query 에 이 파일 전체를 붙여 넣고 Run 을 누르세요.
 -- 처음 설치할 때도, 1판에서 올릴 때도 같은 파일을 쓰면 됩니다. 여러 번 실행해도 안전합니다.
--- 1판에서 올리면 기존 개체·기록·산란·메이팅·설정이 '내 농장'으로 자동으로 옮겨집니다.
+-- 1판에서 올리면 기존 개체·기록·산란·메이팅·설정이 '우리 게코'로 자동으로 옮겨집니다.
+-- (데이터베이스 안의 이름 farms 는 화면에 보이는 '가족' 또는 '브랜드'를 뜻합니다)
 
 ------------------------------------------------------------------------------
--- 1) 농장(브리더 단위)과 구성원
+-- 1) 가족·브랜드(farms)와 구성원
 ------------------------------------------------------------------------------
 create table if not exists public.farms (
   id              text primary key default gen_random_uuid()::text,
-  name            text not null default '내 농장',
+  name            text not null default '우리 게코',
   logo_path       text,
   placeholder     text not null default 'logo' check (placeholder in ('logo', 'google', 'default')),
   placeholder_url text,
@@ -122,7 +123,7 @@ create table if not exists public.pairings (
   updated_at timestamptz not null default now()
 );
 
--- 1판의 사용자별 설정 (2판부터는 농장 설정을 씁니다. 옮기기용으로만 남겨 둡니다)
+-- 1판의 사용자별 설정 (2판부터는 farms 설정을 씁니다. 옮기기용으로만 남겨 둡니다)
 create table if not exists public.settings (
   owner_id        uuid primary key default auth.uid() references auth.users (id) on delete cascade,
   feed_alert_days int not null default 3,
@@ -146,11 +147,18 @@ do $$ begin
   end if;
 end $$;
 
--- 급여 요일 (2.2판): 농장 기본 방식·요일 + 개체별 요일(비우면 농장 기본)
+-- 급여 요일 (2.2판): 가족·브랜드 기본 방식·요일 + 개체별 요일(비우면 기본 요일)
 --   요일 번호: 0=일, 1=월, 2=화, 3=수, 4=목, 5=금, 6=토
 alter table public.farms  add column if not exists feed_mode text not null default 'interval' check (feed_mode in ('interval', 'weekdays'));
 alter table public.farms  add column if not exists feed_days int[] not null default '{}' check (feed_days <@ array[0, 1, 2, 3, 4, 5, 6]);
 alter table public.geckos add column if not exists feed_days int[] check (feed_days <@ array[0, 1, 2, 3, 4, 5, 6]);
+
+-- 기능 켜기/끄기와 부르는 이름 (2.4판)
+--   {"ledger": false, "ref": false, "breeding": false, "unit": "브랜드"} 처럼 저장. 값이 없으면 켜짐, 이름은 '가족'
+--   기능을 꺼도 데이터는 지워지지 않고 화면에서만 숨겨집니다
+alter table public.farms add column if not exists features jsonb not null default '{}';
+alter table public.farms alter column name set default '우리 게코';
+update public.farms set name = '우리 게코' where name = '내 농장';
 
 -- 상태에 '혈관리용(ref)' 추가: 내 개체는 아니지만 혈통도를 잇기 위해 등록하는 개체
 alter table public.geckos drop constraint if exists geckos_status_check;
@@ -162,7 +170,7 @@ create index if not exists clutches_farm on public.clutches (farm_id);
 create index if not exists pairings_farm on public.pairings (farm_id);
 
 ------------------------------------------------------------------------------
--- 3) 1판 데이터 옮기기: 사용자마다 '내 농장'을 만들고 기존 데이터를 연결
+-- 3) 1판 데이터 옮기기: 사용자마다 '우리 게코'를 만들고 기존 데이터를 연결
 ------------------------------------------------------------------------------
 do $$
 declare
@@ -181,7 +189,7 @@ begin
     if fid is null then
       fid := gen_random_uuid()::text;
       insert into public.farms (id, name, created_by, feed_alert_days, foods, code_prefix)
-      select fid, '내 농장', r.owner_id,
+      select fid, '우리 게코', r.owner_id,
              coalesce(s.feed_alert_days, 3),
              coalesce(s.foods, array['슈퍼푸드(CGD)', '귀뚜라미', '듀비아', '기타 곤충']),
              coalesce(s.code_prefix, 'CR-')
@@ -199,7 +207,7 @@ begin
   end loop;
 end $$;
 
--- 기록의 농장은 개체의 농장을 따라갑니다
+-- 기록의 소속(farm_id)은 개체의 소속을 따라갑니다
 update public.logs l set farm_id = g.farm_id from public.geckos g where l.gecko_id = g.id and l.farm_id is distinct from g.farm_id;
 
 alter table public.geckos   alter column farm_id set not null;
@@ -243,7 +251,7 @@ drop policy if exists "own rows" on public.logs;
 drop policy if exists "own rows" on public.clutches;
 drop policy if exists "own rows" on public.pairings;
 
--- 농장
+-- 가족·브랜드
 drop policy if exists "farm: members read"  on public.farms;
 drop policy if exists "farm: admins update" on public.farms;
 create policy "farm: members read"  on public.farms for select to authenticated using (public.farm_role(id) is not null);
@@ -287,13 +295,13 @@ create policy "farm write" on public.logs for all    to authenticated using (pub
 drop policy if exists "own rows" on public.settings;
 create policy "own rows" on public.settings for all to authenticated using (owner_id = (select auth.uid())) with check (owner_id = (select auth.uid()));
 
--- 관리자가 한 명도 없는 농장이 생기지 않도록 막기
+-- 관리자가 한 명도 없는 가족·브랜드가 생기지 않도록 막기
 create or replace function public.keep_one_admin() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   if exists (select 1 from public.farms where id = old.farm_id)
      and not exists (select 1 from public.farm_members where farm_id = old.farm_id and role = 'admin') then
-    raise exception 'last_admin' using hint = '농장에는 관리자가 최소 한 명 있어야 합니다.';
+    raise exception 'last_admin' using hint = '관리자가 최소 한 명 있어야 합니다.';
   end if;
   return null;
 end $$;
@@ -302,9 +310,10 @@ create trigger keep_one_admin after update or delete on public.farm_members
   for each row execute function public.keep_one_admin();
 
 ------------------------------------------------------------------------------
--- 7) 농장 만들기 · 초대 확인 · 초대 수락
+-- 7) 가족·브랜드 만들기 · 초대 확인 · 초대 수락
 ------------------------------------------------------------------------------
-create or replace function public.create_farm(fname text) returns text
+drop function if exists public.create_farm(text);
+create or replace function public.create_farm(fname text, funit text default '가족') returns text
 language plpgsql security definer set search_path = public as $$
 declare
   fid text := gen_random_uuid()::text;
@@ -312,7 +321,9 @@ declare
 begin
   if auth.uid() is null then raise exception 'not_signed_in'; end if;
   select * into u from auth.users where id = auth.uid();
-  insert into public.farms (id, name, created_by) values (fid, coalesce(nullif(trim(fname), ''), '내 농장'), auth.uid());
+  insert into public.farms (id, name, created_by, features)
+  values (fid, coalesce(nullif(trim(fname), ''), '우리 게코'), auth.uid(),
+          jsonb_build_object('unit', case when funit = '브랜드' then '브랜드' else '가족' end));
   insert into public.farm_members (farm_id, user_id, role, email, display_name, avatar_url)
   values (fid, auth.uid(), 'admin', u.email,
           coalesce(u.raw_user_meta_data ->> 'full_name', u.raw_user_meta_data ->> 'name', u.email),
@@ -329,9 +340,9 @@ begin
   select * into i from public.farm_invites where code = c;
   if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
   select * into f from public.farms where id = i.farm_id;
-  if i.used_at is not null then return jsonb_build_object('ok', false, 'reason', 'used', 'farm', f.name); end if;
-  if i.expires_at < now() then return jsonb_build_object('ok', false, 'reason', 'expired', 'farm', f.name); end if;
-  return jsonb_build_object('ok', true, 'farm', f.name, 'role', i.role, 'expires', i.expires_at,
+  if i.used_at is not null then return jsonb_build_object('ok', false, 'reason', 'used', 'farm', f.name, 'unit', coalesce(f.features ->> 'unit', '가족')); end if;
+  if i.expires_at < now() then return jsonb_build_object('ok', false, 'reason', 'expired', 'farm', f.name, 'unit', coalesce(f.features ->> 'unit', '가족')); end if;
+  return jsonb_build_object('ok', true, 'farm', f.name, 'unit', coalesce(f.features ->> 'unit', '가족'), 'role', i.role, 'expires', i.expires_at,
     'from', (select coalesce(m.display_name, m.email) from public.farm_members m where m.farm_id = i.farm_id and m.user_id = i.created_by),
     'member', exists (select 1 from public.farm_members where farm_id = i.farm_id and user_id = auth.uid()));
 end $$;
@@ -360,7 +371,7 @@ end $$;
 ------------------------------------------------------------------------------
 -- 8) QR 공개 카드: 로그인 없이 정해진 항목만 보여 줌
 --    항상 공개: 사진, 개체번호, 이름, 모프, 성별
---    선택 공개(농장 기본값 + 개체별 설정): hatch, lineage, breeder, weight, care, sale, buyer, notes
+--    선택 공개(가족·브랜드 기본값 + 개체별 설정): hatch, lineage, breeder, weight, care, sale, buyer, notes
 --    분양받은 분의 연락처와 무게·급여 외의 개인 정보는 어떤 설정으로도 공개되지 않습니다.
 ------------------------------------------------------------------------------
 create or replace function public.pub_node(nid text, ext text, depth int) returns jsonb
@@ -397,12 +408,12 @@ begin
   select * into f from public.farms where id = g.farm_id;
   member := exists (select 1 from public.farm_members where farm_id = g.farm_id and user_id = auth.uid());
   if not g.public_on and not (member and not preview) then
-    return jsonb_build_object('private', true, 'member', member, 'farm_id', case when member then g.farm_id end, 'farm_name', case when member then f.name end);
+    return jsonb_build_object('private', true, 'member', member, 'unit', coalesce(f.features ->> 'unit', '가족'), 'farm_id', case when member then g.farm_id end, 'farm_name', case when member then f.name end);
   end if;
   vis := coalesce(f.public_defaults, '{}'::jsonb) || coalesce(g.public_fields, '{}'::jsonb);
   res := jsonb_build_object(
     'id', g.id, 'code', g.code, 'name', g.name, 'morph', g.morph, 'sex', g.sex, 'photo', g.photo_path, 'status', g.status,
-    'vis', vis, 'member', member,
+    'vis', vis, 'member', member, 'unit', coalesce(f.features ->> 'unit', '가족'),
     'farm_id', case when member then g.farm_id end, 'farm_name', case when member then f.name end);
   if coalesce((vis ->> 'breeder')::boolean, false) then
     res := res || jsonb_build_object('farm', jsonb_build_object('name', f.name, 'logo', f.logo_path, 'placeholder', f.placeholder, 'placeholder_url', f.placeholder_url));
@@ -439,11 +450,11 @@ end $$;
 
 grant execute on function public.public_gecko(text, boolean) to anon, authenticated;
 grant execute on function public.invite_info(text)            to anon, authenticated;
-grant execute on function public.create_farm(text)            to authenticated;
+grant execute on function public.create_farm(text, text)      to authenticated;
 grant execute on function public.accept_invite(text)          to authenticated;
 
 ------------------------------------------------------------------------------
--- 8-1) 가계부 (2.3판): 지출·수입 내역. 농장 관리자만 보고 쓸 수 있음
+-- 8-1) 가계부 (2.3판): 지출·수입 내역. 관리자만 보고 쓸 수 있음
 --      개체의 입양가(geckos.acquired_price)와 분양가(geckos.sale.price)는 앱이 가계부에 자동으로 함께 보여 줍니다
 ------------------------------------------------------------------------------
 alter table public.geckos add column if not exists acquired_price bigint check (acquired_price is null or acquired_price >= 0);
@@ -471,7 +482,7 @@ create policy "ledger: admins" on public.ledger for all to authenticated
 ------------------------------------------------------------------------------
 -- 9) 사진 저장소
 --    올리기·지우기: 본인 폴더(사용자 id)만
---    보기: 본인 폴더, 같은 농장 개체의 사진, 공개 카드 개체의 사진, 농장 로고
+--    보기: 본인 폴더, 같은 가족·브랜드 개체의 사진, 공개 카드 개체의 사진, 로고
 ------------------------------------------------------------------------------
 insert into storage.buckets (id, name, public)
 values ('photos', 'photos', false)

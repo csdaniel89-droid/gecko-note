@@ -33,9 +33,10 @@ const ROLE = { admin:'관리자', keeper:'기록 담당', viewer:'보기 전용'
 const ROLE_HINT = { admin:'개체·브리딩·분양·설정·구성원까지 모두', keeper:'무게·급여·탈피·배변·메모 기록 추가와 수정', viewer:'보기만 가능' };
 const HATCHM = { exact:'정확한 날짜', approx:'대략(추정)', unknown:'알 수 없음' };
 const PUBF = [
-  ['hatch', '해칭일·나이'], ['lineage', '혈통(부모·조부모)'], ['breeder', '브리더(농장 이름·로고)'], ['weight', '무게 기록'],
+  ['hatch', '해칭일·나이'], ['lineage', '혈통(부모·조부모)'], ['breeder', '브리더(이름·로고)'], ['weight', '무게 기록'],
   ['care', '급여·탈피·배변 기록'], ['sale', '분양일·분양가'], ['buyer', '분양받은 분 이름'], ['notes', '메모']
 ];
+const pubT = (k, t) => k === 'breeder' ? `${U() === '브랜드' ? '브리더' : U()} 이름·로고` : t;
 const PUB_DEF = { hatch:true, lineage:true, breeder:true, weight:false, care:false, sale:false, buyer:false, notes:false };
 const FOOT = '<svg class="foot" viewBox="0 0 64 64" aria-hidden="true"><g fill="currentColor"><ellipse cx="32" cy="18" rx="7" ry="8"/><ellipse cx="32" cy="33" rx="8.5" ry="11.5"/><path d="M30 43c-1 8 3 13 11 16-4-4-6-9-5.5-16z"/><circle cx="17" cy="22" r="2.6"/><circle cx="47" cy="22" r="2.6"/><circle cx="17" cy="46" r="2.6"/><circle cx="47" cy="46" r="2.6"/></g><path d="M26 27l-8-4M38 27l8-4M26 39l-8 6M38 39l8 6" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" fill="none"/></svg>';
 const EGG = '<svg width="22" height="26" viewBox="0 0 24 28" aria-hidden="true"><path d="M12 2C17 2 21 10.5 21 17a9 9 0 0 1-18 0C3 10.5 7 2 12 2z" fill="#FFFDF6" stroke="var(--edge)" stroke-width="2"/></svg>';
@@ -90,6 +91,10 @@ function hatchLabel(g) {
 const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const lsDel = k => { try { localStorage.removeItem(k); } catch {} };
+// 받침에 따라 조사 고르기: jo('가족', '을', '를') → '가족을', jo('브랜드', '을', '를') → '브랜드를'
+const jong = w => { const t = String(w || ''), c = t.charCodeAt(t.length - 1); return c >= 0xAC00 && c <= 0xD7A3 ? (c - 0xAC00) % 28 : 0; };
+const jo = (w, a, b) => w + (jong(w) ? a : b);
+const joRo = w => w + (jong(w) && jong(w) !== 8 ? '으로' : '로');
 
 /* ---------- state ---------- */
 const S = {
@@ -106,6 +111,11 @@ const S = {
 };
 const G = id => id ? S.geckos.get(id) : null;
 const can = need => need === 'admin' ? S.role === 'admin' : need === 'log' ? (S.role === 'admin' || S.role === 'keeper') : true;
+// 부르는 이름(가족·브랜드)과 기능 켜기/끄기. 값이 없으면 '가족', 기능은 켜짐
+const UNITS = { 가족:'집에서 함께 키워요', 브랜드:'브리더·샵으로 운영해요' };
+const unitOf = f => { const u = f && (f.unit || (f.features && f.features.unit)); return UNITS[u] ? u : '가족'; };
+const U = () => unitOf(S.farm);
+const feat = k => !(S.farm && S.farm.features && S.farm.features[k] === false);
 const pubVis = g => ({...PUB_DEF, ...((S.farm && S.farm.public_defaults) || {}), ...((g && g.publicFields) || {})});
 const gStatus = g => g.status || 'active';
 const gTitle = g => g ? (g.name || g.morph || g.code || '이름 없음') : '';
@@ -184,12 +194,12 @@ let sb = null;
 async function q(p) { const {data, error} = await p; if (error) throw error; return data; }
 function errMsg(e) {
   const m = String((e && (e.message || e.error_description || e.details)) || e || '');
-  if (/last_admin/.test(m)) return '농장에는 관리자가 최소 한 명 있어야 합니다. 다른 구성원을 관리자로 바꾼 뒤 다시 시도하세요.';
+  if (/last_admin/.test(m)) return '관리자가 최소 한 명 있어야 합니다. 다른 구성원을 관리자로 바꾼 뒤 다시 시도하세요.';
   if (/invite_used/.test(m)) return '이미 사용된 초대 링크입니다.';
   if (/invite_expired/.test(m)) return '기간이 지난 초대 링크입니다.';
   if (/invite_not_found/.test(m)) return '초대 링크가 올바르지 않습니다.';
   if (/fetch|network|load failed/i.test(m)) return '서버에 연결하지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도하세요.';
-  if ((e && e.code === '42501') || /row-level security|permission denied/i.test(m)) return '이 작업을 할 권한이 없습니다. 농장 관리자에게 권한을 요청하세요.';
+  if ((e && e.code === '42501') || /row-level security|permission denied/i.test(m)) return '이 작업을 할 권한이 없습니다. 관리자에게 권한을 요청하세요.';
   if ((e && (e.code === '42P01' || e.code === '42883' || e.code === 'PGRST202' || e.code === 'PGRST205')) || /does not exist|schema cache/i.test(m)) return '데이터베이스가 최신이 아닙니다. 안내드린 SQL(schema.sql)을 Supabase에서 다시 실행해 주세요.';
   if (/jwt|session|not authenticated|not_signed_in/i.test(m)) return '로그인이 만료되었습니다. 페이지를 새로 고친 뒤 다시 로그인해 주세요.';
   return '저장하지 못했습니다. 잠시 후 다시 시도하세요.';
@@ -238,7 +248,7 @@ async function loadAll() {
     S.settings = {feedAlertDays:f.feed_alert_days ?? DEF.feedAlertDays, feedMode:f.feed_mode || 'interval', feedDays:Array.isArray(f.feed_days) ? f.feed_days : [], foods:f.foods && f.foods.length ? f.foods : DEF.foods, codePrefix:f.code_prefix ?? DEF.codePrefix};
     S.members = members || []; S.invites = (invites || []).filter(i => Date.parse(i.expires_at) > Date.now());
     S.ledger = []; S.ledgerErr = '';
-    if (cur.role === 'admin') {
+    if (cur.role === 'admin' && feat('ledger')) {
       try { S.ledger = (await q(sb.from('ledger').select('*').eq('farm_id', fid))).map(r => ({id:r.id, date:r.date, kind:r.kind, category:r.category, amount:Number(r.amount) || 0, gecko_id:r.gecko_id, memo:r.memo || '', src:'manual'})); }
       catch (e) { S.ledgerErr = errMsg(e); }
     }
@@ -351,6 +361,7 @@ function render() {
   document.title = own ? `${S.farm.name} 관리노트` : APP_NAME;
   const av = $('.brand-av'), logo = own && S.farm.logo_path ? S.urls.get(S.farm.logo_path) : '';
   if (av && av.dataset.k !== (logo || 'g')) { av.dataset.k = logo || 'g'; av.innerHTML = logo ? `<img src="${esc(logo)}" alt="">` : FOOT; }
+  const tb = $('.tabs a[data-tab=breeding]'); if (tb) tb.hidden = !!own && !feat('breeding');
   view.classList.remove('bulking');
   S.chartData = null;
   if (!signedIn) {
@@ -368,8 +379,8 @@ function render() {
   else if (r.v === 'pub') html = vPublic(r.id, true);
   else if (r.v === 'map') html = vMap(r.id);
   else if (r.v === 'home') html = vHome();
-  else if (r.v === 'ledger') html = vLedger();
-  else if (r.v === 'breeding') html = vBreeding();
+  else if (r.v === 'ledger') html = feat('ledger') ? vLedger() : offNote('가계부', '수입·지출 기록과 개체별 손익을 보는 기능입니다.');
+  else if (r.v === 'breeding') html = feat('breeding') ? vBreeding() : offNote('브리딩', '메이팅·산란·인큐베이터·해칭을 기록하는 기능입니다.');
   else if (r.v === 'sales') html = vSales();
   else if (r.v === 'setup') html = vSetup();
   else if (r.v === 'labels') html = vLabels();
@@ -383,6 +394,8 @@ function render() {
   if (r.v === 'setup') wireSetup();
   if (r.v === 'map') drawMap();
 }
+const offNote = (name, what) => `<div class="empty off-note"><h2>${jo(name, '이', '가')} 꺼져 있습니다</h2><p>${what} 지금은 쓰지 않도록 꺼 두었고, 그동안의 기록은 그대로 남아 있습니다.</p>
+  <div class="actions">${can('admin') ? '<a class="btn primary" href="#setup">설정에서 켜기</a>' : ''}<a class="btn" href="#home">홈으로</a></div>${can('admin') ? '' : '<p class="hint">관리자가 설정에서 켤 수 있습니다.</p>'}</div>`;
 const loadingHTML = (t = '불러오는 중…') => `<div class="loading">${t}</div>`;
 const connErr = () => `<div class="empty"><h2>데이터를 불러오지 못했습니다</h2><p>${esc(S.connMsg || '')}</p><button class="btn primary" data-act="retry">다시 시도</button></div>`;
 const GOOGLE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18"><path fill="currentColor" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="currentColor" opacity=".8" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="currentColor" opacity=".6" d="M6.4 14a6 6 0 0 1 0-3.9V7.4H3.1a10 10 0 0 0 0 9.1z"/><path fill="currentColor" opacity=".7" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.4L6.4 10C7.2 7.7 9.4 6 12 6z"/></svg>';
@@ -428,9 +441,10 @@ function vPublic(id, preview) {
   if (!d) return `${top}<div class="empty"><h2>개체를 찾을 수 없습니다</h2><p>삭제되었거나 QR이 가리키는 개체가 바뀌었을 수 있습니다.</p>${signIn}</div>`;
   let other = '';
   if (!preview && S.auth === 'in' && d.member && d.farm_id && (!S.farm || d.farm_id !== S.farm.id)) {
-    other = `<div class="notice"><p>내가 속한 다른 농장 <b>${esc(d.farm_name || '')}</b>의 개체입니다. 그 농장으로 전환하면 관리 화면이 열립니다.</p><button class="btn small primary" data-act="switch-farm" data-farm="${esc(d.farm_id)}" data-go="g-${esc(id)}">그 농장으로 전환</button></div>`;
+    const du = unitOf(d);
+    other = `<div class="notice"><p>내가 속한 다른 ${du} <b>${esc(d.farm_name || '')}</b>의 개체입니다. 그 ${joRo(du)} 전환하면 관리 화면이 열립니다.</p><button class="btn small primary" data-act="switch-farm" data-farm="${esc(d.farm_id)}" data-go="g-${esc(id)}">그 ${joRo(du)} 전환</button></div>`;
   }
-  if (d.private) return `${top}${other}<div class="empty"><h2>공개되지 않은 개체입니다</h2><p>이 개체는 공개 카드가 꺼져 있어 농장 구성원만 볼 수 있습니다.</p>${signIn}</div>`;
+  if (d.private) return `${top}${other}<div class="empty"><h2>공개되지 않은 개체입니다</h2><p>이 개체는 공개 카드가 꺼져 있어 ${unitOf(d)} 구성원만 볼 수 있습니다.</p>${signIn}</div>`;
   const vis = d.vis || {}, farm = d.farm || null;
   const fb = farm ? (farm.placeholder === 'google' ? (farm.placeholder_url || '') : farm.placeholder === 'logo' && farm.logo ? (S.urls.get(farm.logo) || '') : '') : '';
   const pg = {id:d.id, code:d.code || '', name:d.name || '', morph:d.morph || '', sex:d.sex || 'u', photo:d.photo, hatchDate:d.hatch_date, hatchMode:d.hatch_mode, _pub:true, _fb:fb};
@@ -442,7 +456,7 @@ function vPublic(id, preview) {
   let h = `${top}${other}<article class="pcard">`;
   if (farm) {
     const logo = farm.logo && S.urls.get(farm.logo);
-    h += `<header class="pc-farm">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : `<span class="pc-ini">${esc((farm.name || '?').slice(0, 1))}</span>`}<span><span class="pc-k">브리더</span><b>${esc(farm.name || '')}</b></span></header>`;
+    h += `<header class="pc-farm">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : `<span class="pc-ini">${esc((farm.name || '?').slice(0, 1))}</span>`}<span><span class="pc-k">${unitOf(d) === '브랜드' ? '브리더' : unitOf(d)}</span><b>${esc(farm.name || '')}</b></span></header>`;
   }
   h += `<section class="dhead"><div class="ph">${photo}</div><div class="dinfo">
       <div class="dcode"><span>${esc(pg.code || '번호 없음')}</span>${d.sale ? `<span class="pill">분양 완료</span>` : ''}</div>
@@ -493,7 +507,7 @@ function vJoin(code) {
   }
   document.title = `${i.farm} 초대장`;
   const head = `<p class="auth-eyebrow">초대장</p><h1 class="auth-title">${esc(i.farm)}</h1>
-    <p class="ic-from">${i.from ? `<b>${esc(i.from)}</b>님이 보낸 초대장입니다.` : '농장 관리노트 초대장입니다.'}</p>
+    <p class="ic-from">${i.from ? `<b>${esc(i.from)}</b>님이 보낸 초대장입니다.` : `${unitOf(i)} 관리노트 초대장입니다.`}</p>
     <dl class="facts ic-facts"><dt>권한</dt><dd><b>${ROLE[i.role]}</b> · ${ROLE_HINT[i.role]}</dd>${i.expires ? `<dt>유효기간</dt><dd>${fmtD(String(i.expires).slice(0, 10))}까지</dd>` : ''}</dl>`;
   const foot = `<p class="ic-app">${APP_NAME} · 크레스티드 게코 개체 관리</p>`;
   if (S.auth !== 'in') {
@@ -501,7 +515,7 @@ function vJoin(code) {
       <button class="btn primary auth-btn" data-act="login">${GOOGLE_SVG}Google 계정으로 로그인하고 참여</button>
       <p class="hint">구글 로그인이 안 되면 초대한 분께 내 구글 계정을 사용자로 등록해 달라고 알려 주세요.</p>${foot}</section>`;
   }
-  if (i.member) return `<section class="auth invite-card">${head}<p class="auth-text">이미 이 농장의 구성원입니다. 설정에서 농장을 전환할 수 있습니다.</p><a class="btn" href="#setup">설정으로</a>${foot}</section>`;
+  if (i.member) return `<section class="auth invite-card">${head}<p class="auth-text">이미 이 ${unitOf(i)}의 구성원입니다. 설정에서 ${jo(unitOf(i), '을', '를')} 전환할 수 있습니다.</p><a class="btn" href="#setup">설정으로</a>${foot}</section>`;
   return `<section class="auth invite-card">${head}
     <button class="btn primary auth-btn" data-act="accept-invite" data-code="${esc(code)}">초대 수락하고 참여하기</button>
     ${S.needFarm ? '' : '<a class="btn" href="#list">나중에</a>'}${foot}</section>`;
@@ -512,28 +526,48 @@ function inAppNote() {
     ? `<div class="notice inapp"><p>카카오톡 안에서는 구글 로그인이 막혀 있습니다. 로그인 버튼을 누르면 휴대폰의 기본 브라우저로 열어 드립니다.</p></div>`
     : `<div class="notice inapp"><p>이 앱 안의 브라우저에서는 구글 로그인이 막혀 있습니다. 화면 위나 아래의 메뉴(⋮ 또는 …)에서 <b>‘다른 브라우저로 열기’</b>를 눌러 Chrome이나 Safari에서 열어 주세요.</p><button class="btn small" data-act="copy-here">주소 복사</button></div>`;
 }
+const NAME_EX = { 가족:'예: 우리집 게코', 브랜드:'예: OO 크레스티드' };
+const unitPick = (name, cur) => `<div class="seg radio unitpick" role="radiogroup">${Object.entries(UNITS).map(([k, t]) => `<label><input type="radio" name="${name}" value="${k}"${cur === k ? ' checked' : ''}><span>${k}<small>${t}</small></span></label>`).join('')}</div>`;
+// 부르는 이름을 바꾸면 이름 칸의 제목과 예시도 함께 바꿈
+function wireUnit(root, name, labelSel, inputSel) {
+  root.querySelectorAll(`input[name=${name}]`).forEach(r => r.addEventListener('change', () => {
+    const u = (root.querySelector(`input[name=${name}]:checked`) || {}).value || '가족';
+    const l = root.querySelector(labelSel), i = root.querySelector(inputSel);
+    if (l) l.textContent = `${u} 이름`; if (i) i.placeholder = NAME_EX[u];
+  }));
+}
 function vOnboard() {
-  return `<section class="auth"><p class="auth-eyebrow">시작하기</p><h1 class="auth-title">내 농장 만들기</h1>
-    <p class="auth-text">개체는 농장 단위로 관리합니다. 브리더 이름이나 브랜드 이름을 정해 주세요. 나중에 설정에서 바꿀 수 있습니다.</p>
+  return `<section class="auth"><p class="auth-eyebrow">시작하기</p><h1 class="auth-title">관리노트 만들기</h1>
+    <p class="auth-text">개체는 가족이나 브랜드 단위로 함께 관리합니다. 어떻게 부를지 고르고 이름을 정해 주세요. 나중에 설정에서 바꿀 수 있습니다.</p>
     <form id="onboard" class="form" style="width:100%" novalidate>
-      <div class="field"><label for="ob-name">농장 이름</label><input id="ob-name" placeholder="예: OO 크레스티드" autocomplete="off"></div>
+      <div class="field"><span class="lbl">어떻게 부를까요?</span>${unitPick('ob-unit', '가족')}</div>
+      <div class="field"><label for="ob-name" id="ob-name-l">가족 이름</label><input id="ob-name" placeholder="${NAME_EX['가족']}" autocomplete="off"></div>
       <p class="err" hidden></p>
-      <button class="btn primary auth-btn" type="submit" id="ob-save">농장 만들기</button>
+      <button class="btn primary auth-btn" type="submit" id="ob-save">만들기</button>
     </form>
-    <p class="hint">다른 농장에 초대받았다면 받은 초대 링크를 다시 열어 주세요.</p></section>`;
+    <p class="hint">브리딩·가계부·혈관리용 기능은 만든 뒤 설정에서 켜고 끌 수 있습니다.</p>
+    <p class="hint">다른 가족이나 브랜드에 초대받았다면 받은 초대 링크를 다시 열어 주세요.</p></section>`;
 }
 function wireOnboard() {
   const f = $('#onboard'); if (!f || f.dataset.w) return; f.dataset.w = 1;
+  wireUnit(f, 'ob-unit', '#ob-name-l', '#ob-name');
   f.addEventListener('submit', async ev => {
     ev.preventDefault();
     const btn = $('#ob-save'); busy(btn, true, '만드는 중…');
-    try { await createFarm($('#ob-name').value.trim()); }
+    try { await createFarm($('#ob-name').value.trim(), (f.querySelector('input[name=ob-unit]:checked') || {}).value); }
     catch (e) { busy(btn, false); const er = f.querySelector('.err'); er.textContent = errMsg(e); er.hidden = false; }
   });
 }
-async function createFarm(name) {
-  const fid = await q(sb.rpc('create_farm', {fname:name || '내 농장'}));
-  lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('home'); toast('농장을 만들었습니다');
+async function createFarm(name, unit) {
+  unit = UNITS[unit] ? unit : '가족';
+  let fid;
+  try { fid = await q(sb.rpc('create_farm', {fname:name || '우리 게코', funit:unit})); }
+  catch (e) {
+    // 데이터베이스를 아직 2.4판으로 올리지 않았을 때(부르는 이름 없이) 만들기
+    if (!(e && (e.code === 'PGRST202' || /schema cache|funit/i.test(e.message || '')))) throw e;
+    fid = await q(sb.rpc('create_farm', {fname:name || '우리 게코'}));
+  }
+  lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('home'); toast(`${jo(unit, '을', '를')} 만들었습니다`);
 }
 function resetFarmView() {
   S.loaded = {g:false, c:false, p:false}; S.logGid = null; S.logs = []; S.bulk = false; S.sel.clear();
@@ -583,7 +617,7 @@ function vHome() {
   const greet = wdMode ? (feedDay ? '급여하는 날이에요' : nx ? `다음 급여일은 ${WD[wdOf(nx)]}요일이에요` : '') : '';
   let h = `<div class="home"><div class="hello"><span>${m}월 ${d}일 ${WD[wdOf(td)]}요일${greet ? ', ' + greet : ''}</span><h1>${esc(S.farm.name)}</h1></div>`;
   if (!all.length) {
-    return h + `<div class="empty"><h2>첫 개체를 등록해 보세요</h2><p>개체번호, 모프, 성별, 해칭일, 사진, 부모를 입력하면 이곳에 급여할 개체와 인큐베이터 소식이 모입니다.</p>
+    return h + `<div class="empty"><h2>첫 개체를 등록해 보세요</h2><p>개체번호, 모프, 성별, 해칭일, 사진, 부모를 입력하면 이곳에 급여할 개체${feat('breeding') ? '와 인큐베이터 소식이' : '가'} 모입니다.</p>
       <div class="actions"><button class="btn primary" data-act="new-gecko">+ 개체 등록</button><button class="btn" data-act="load-samples">예시 3마리 넣어 보기</button></div>
       <p class="hint">예시는 화면을 둘러보는 용도이며, 설정에서 언제든 지울 수 있습니다.</p></div></div>`;
   }
@@ -598,7 +632,7 @@ function vHome() {
     .sort((a, b) => (a.expectAt || '9999').localeCompare(b.expectAt || '9999') || (a.laidAt || '').localeCompare(b.laidAt || ''));
   const hatched = [...S.clutches.values()].filter(c => c.status === 'hatched' && c.hatchAt && daysSince(c.hatchAt) >= 0 && daysSince(c.hatchAt) <= 14)
     .sort((a, b) => b.hatchAt.localeCompare(a.hatchAt));
-  const soon = inc.filter(c => c.expectAt && daysUntil(c.expectAt) <= 14);
+  const soon = feat('breeding') ? inc.filter(c => c.expectAt && daysUntil(c.expectAt) <= 14) : [];
   const stale = act.filter(g => !g.last.weight || daysSince(g.last.weight.d) >= 30);
 
   let ck = '';
@@ -630,7 +664,8 @@ function vHome() {
     ${inc.length || hatched.length ? `<div class="incs">${inc.map(incCard).join('')}${hatched.map(hatchCard).join('')}</div>`
       : `<p class="hint">인큐 중인 알이 없어요.${can('admin') ? ' 브리딩에서 산란을 기록하면 여기에서 해칭까지 남은 날을 볼 수 있어요.' : ''}</p>`}</section>`;
 
-  h += `<div class="home-grid"><div class="col2">${check}${fr}</div><div class="col2">${incs}${can('admin') ? homeMoney() : ''}</div></div>
+  const right = (feat('breeding') ? incs : '') + (can('admin') && feat('ledger') ? homeMoney() : '');
+  h += `<div class="home-grid${right ? '' : ' one'}"><div class="col2">${check}${fr}</div>${right ? `<div class="col2">${right}</div>` : ''}</div>
     <div class="home-foot"><a class="btn" href="#list">개체 ${act.length}마리 모두 보기</a></div></div>`;
   return h;
 }
@@ -665,7 +700,7 @@ function geckoLedger(gid, all) {
 }
 function ledgerTitle(e) {
   const g = e.gecko_id ? G(e.gecko_id) : null;
-  return [g ? gLabel(g) : '', e.memo].filter(Boolean).join(' · ') || (e.gecko_id ? '삭제된 개체' : '농장 전체');
+  return [g ? gLabel(g) : '', e.memo].filter(Boolean).join(' · ') || (e.gecko_id ? '삭제된 개체' : `${U()} 전체`);
 }
 function ledgerRow(e) {
   const inner = `<span class="ld-d mono">${fmtShort(e.date)}</span><span class="ld-t"><span class="pill${e.kind === 'income' ? ' good' : ''}">${esc(e.category)}</span> ${esc(ledgerTitle(e))}${e.src !== 'manual' ? ' <span class="tag nw">자동</span>' : ''}</span><span class="ld-a ${e.kind}">${signedWon(e.kind, e.amount)}</span>`;
@@ -675,7 +710,7 @@ function ledgerRow(e) {
 }
 function vLedger() {
   if (!S.loaded.g) return loadingHTML();
-  if (!can('admin')) return `<div class="empty"><h2>가계부는 관리자만 볼 수 있습니다</h2><p>농장의 수입·지출 정보라서 관리자 권한이 있어야 열 수 있습니다.</p><a class="btn" href="#home">홈으로</a></div>`;
+  if (!can('admin')) return `<div class="empty"><h2>가계부는 관리자만 볼 수 있습니다</h2><p>${U()}의 수입·지출 정보라서 관리자 권한이 있어야 열 수 있습니다.</p><a class="btn" href="#home">홈으로</a></div>`;
   const P = S.lp, all = ledgerEntries(), pre = lpPrefix(P), list = all.filter(e => e.date.startsWith(pre)), t = sums(list);
   let h = `<a class="back" href="#home">← 홈</a><div class="vhead"><div><h1 class="vtitle">가계부</h1><p class="vsub">입양·분양·관리비를 한곳에 모아 봅니다.</p></div>
     <div class="actions"><button class="btn primary" data-act="new-ledger" data-kind="expense">+ 지출</button><button class="btn" data-act="new-ledger" data-kind="income">+ 수입</button></div></div>`;
@@ -706,7 +741,7 @@ function vLedger() {
   const per = [...S.geckos.values()].filter(g => gStatus(g) !== 'ref').map(g => ({g, ...geckoLedger(g.id, all)})).filter(x => x.count).sort((a, b) => b.net - a.net);
   right += `<section class="panel"><div class="ph3"><h3>개체별 손익 <small class="muted">전체 기간</small></h3></div>${per.length ? `<ul class="rows">${per.slice(0, 30).map(x => `<li><a class="rowbtn" href="#g-${x.g.id}"><span class="r1">${esc(gLabel(x.g))}</span><span class="r2">입양 ${won(x.acq)} · 관리비 ${won(x.care)} · 분양 ${won(x.sale)}</span><span class="rr"><span class="ld-a ${x.net >= 0 ? 'income' : 'expense'}">${x.net >= 0 ? '+' : '−'}${won(Math.abs(x.net))}</span></span></a></li>`).join('')}</ul>` : '<p class="muted">개체와 연결된 금액이 아직 없습니다. 지출을 기록할 때 개체를 고르면 개체별 손익이 계산됩니다.</p>'}</section>`;
   h += `<div class="cols2"><div class="col" style="display:flex;flex-direction:column;gap:16px">${left}</div><div class="col" style="display:flex;flex-direction:column;gap:16px">${right}</div></div>
-    <p class="hint">가계부는 농장 관리자만 볼 수 있습니다. 개인 기록용이며 세무 신고용 장부를 대신하지 않습니다.</p>`;
+    <p class="hint">가계부는 관리자만 볼 수 있습니다. 개인 기록용이며 세무 신고용 장부를 대신하지 않습니다.</p>`;
   return h;
 }
 function homeMoney() {
@@ -731,7 +766,7 @@ function openLedgerForm(id, pre = {}) {
     <div class="grid2"><div class="field"><label for="ld-date">날짜</label><input id="ld-date" type="date" value="${esc(e.date)}"></div>
       <div class="field"><label for="ld-amt">금액 (원)</label><input id="ld-amt" inputmode="numeric" autocomplete="off" placeholder="예: 32,000" value="${e.amount ? Number(e.amount).toLocaleString('ko-KR') : ''}"></div></div>
     <div class="grid2"><div class="field"><label for="ld-cat">항목</label><select id="ld-cat">${cats(e.kind)}</select></div>
-      <div class="field"><label for="ld-g">개체 (선택)</label><select id="ld-g"><option value="">농장 전체</option>${gopts}</select></div></div>
+      <div class="field"><label for="ld-g">개체 (선택)</label><select id="ld-g"><option value="">${U()} 전체</option>${gopts}</select></div></div>
     <div class="field"><label for="ld-memo">메모</label><input id="ld-memo" value="${esc(e.memo || '')}" autocomplete="off" placeholder="예: CGD 2봉, 동물병원 진료"></div>
     <p class="hint">개체를 고르면 개체별 손익에 관리비로 들어갑니다. 입양가와 분양가는 개체 정보 수정·분양 처리에서 입력하면 자동으로 들어옵니다.</p>
     <p class="err" hidden></p>
@@ -773,6 +808,7 @@ function ledgerCsv() {
 function vList() {
   if (!S.loaded.g) return loadingHTML('개체 목록을 불러오는 중…');
   const all = [...S.geckos.values()];
+  if (S.listFilter === 'ref' && !feat('ref')) S.listFilter = 'active';
   const cnt = {active:0, sold:0, dead:0, ref:0};
   all.forEach(g => { cnt[gStatus(g)] = (cnt[gStatus(g)] || 0) + 1; });
   let arr = all.filter(g => S.listFilter === 'all' ? gStatus(g) !== 'ref' : gStatus(g) === S.listFilter);
@@ -782,7 +818,7 @@ function vList() {
   let h = '';
   if (all.some(g => g.sample)) h += `<div class="notice"><p><b>예시 개체가 들어 있습니다.</b> 화면을 둘러보는 용도입니다. 내 개체를 등록한 뒤 지우면 됩니다.</p><button class="btn small" data-act="clear-samples">예시 지우기</button></div>`;
   h += `<div class="vhead"><div><h1 class="vtitle">개체</h1></div></div>`;
-  const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['ref', '혈관리용'], ['all', '전체']].filter(([v]) => (v !== 'dead' || cnt.dead) && (v !== 'ref' || cnt.ref));
+  const segs = [['active', '보유 중'], ['sold', '분양'], ['dead', '사망'], ['ref', '혈관리용'], ['all', '전체']].filter(([v]) => (v !== 'dead' || cnt.dead) && (v !== 'ref' || (cnt.ref && feat('ref'))));
   h += `<div class="toolbar">
     <div class="seg">${segs.map(([v, t]) => `<button data-act="filter" data-v="${v}" aria-pressed="${S.listFilter === v}">${t}<span class="n">${v === 'all' ? all.length - cnt.ref : (cnt[v] || 0)}</span></button>`).join('')}</div>
     <div class="tb-right">
@@ -851,7 +887,7 @@ function vGecko(id) {
         <dt>해칭일</dt><dd>${esc(hatchText(g))} <span class="muted">${esc(hatchAge(g))}</span></dd>
         <dt>입양일</dt><dd>${fmtD(g.acquiredDate)}</dd>
         <dt>출처</dt><dd>${esc(src)}</dd>
-        ${st === 'active' ? `<dt>급여</dt><dd>${fi.sched.mode === 'weekdays' ? `${wdText(fi.sched.days)} <span class="muted">${fi.sched.own ? '(이 개체만)' : '(농장 기본)'}</span>` : `${fi.sched.limit}일마다 확인 <span class="muted">(농장 기본)</span>`}${fi.state === 'missed' ? ' <span class="pill bad">급여 놓침</span>' : fi.state === 'today' ? ' <span class="pill warn">오늘 급여일</span>' : fi.next ? ` <span class="muted">· 다음 ${fmtShort(fi.next)}(${WD[wdOf(fi.next)]})</span>` : ''}</dd>` : ''}
+        ${st === 'active' ? `<dt>급여</dt><dd>${fi.sched.mode === 'weekdays' ? `${wdText(fi.sched.days)} <span class="muted">${fi.sched.own ? '(이 개체만)' : '(기본 요일)'}</span>` : `${fi.sched.limit}일마다 확인 <span class="muted">(기본 설정)</span>`}${fi.state === 'missed' ? ' <span class="pill bad">급여 놓침</span>' : fi.state === 'today' ? ' <span class="pill warn">오늘 급여일</span>' : fi.next ? ` <span class="muted">· 다음 ${fmtShort(fi.next)}(${WD[wdOf(fi.next)]})</span>` : ''}</dd>` : ''}
       </dl>
       <div class="actions">
         <button class="btn" data-act="edit-gecko" data-id="${id}">정보 수정</button>
@@ -880,11 +916,11 @@ function vGecko(id) {
   const chartPanel = `<section class="panel o1"><div class="ph3"><h3>무게 변화</h3><div class="acts"><button class="btn small" data-act="log" data-t="weight" data-id="${id}">+ 무게</button></div></div>
     ${!loaded ? loadingHTML('기록을 불러오는 중…') : weights.length === 0 ? `<p class="muted">아직 무게 기록이 없습니다. 위의 <b>무게</b> 버튼으로 첫 기록을 남겨 보세요.</p>` : weights.length === 1 ? `${wsum}<p class="hint">두 번 이상 기록하면 변화 그래프가 그려집니다.</p>` : `${wsum}<div class="wchart" id="wchart"></div>`}</section>`;
   const pedPanel = `<section class="panel o2"><div class="ph3"><h3>혈통</h3><div class="acts"><a class="btn small" href="#map-${id}">마인드맵으로 보기</a><button class="btn small" data-act="edit-gecko" data-id="${id}">부모 지정</button></div></div>${pedigree(g)}<p class="hint">개체를 누르면 해당 개체 화면으로 이동합니다. 점선은 목록에 없는 개체입니다.</p></section>`;
-  const breedPanel = geckoBreeding(g);
+  const breedPanel = feat('breeding') ? geckoBreeding(g) : '';
   const tlPanel = timeline(g, loaded);
   const notesPanel = g.notes ? `<section class="panel o5"><div class="ph3"><h3>메모</h3></div><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(g.notes)}</p></section>` : '';
   const salePanel = st === 'sold' ? salePanelHTML(g) : '';
-  const moneyPanel = can('admin') && st !== 'ref' ? geckoMoney(g) : '';
+  const moneyPanel = can('admin') && feat('ledger') && st !== 'ref' ? geckoMoney(g) : '';
   h += st === 'ref'
     ? `<div class="dgrid"><div class="col">${pedPanel}</div><div class="col">${breedPanel}${notesPanel}</div></div>`
     : `<div class="dgrid"><div class="col">${chartPanel}${tlPanel}</div><div class="col">${pedPanel}${breedPanel}${notesPanel}${salePanel}${moneyPanel}</div></div>`;
@@ -986,7 +1022,7 @@ function kinLabel(list) {
   if (t === 4) return '사촌 (4촌)';
   return '오촌 (5촌)';
 }
-const KIN_NOTE = '이 확인은 이 앱에 입력된 혈통 정보(지금 농장에 등록된 개체와 부모 연결)만으로 계산합니다. ‘이름만 적기’로 입력한 부모나 등록하지 않은 조상은 비교하지 못하므로, 경고가 없어도 혈연이 없다고 보장하지는 않습니다.';
+const KIN_NOTE = '이 확인은 이 앱에 입력된 혈통 정보(지금 보고 있는 가족·브랜드에 등록된 개체와 부모 연결)만으로 계산합니다. ‘이름만 적기’로 입력한 부모나 등록하지 않은 조상은 비교하지 못하므로, 경고가 없어도 혈연이 없다고 보장하지는 않습니다.';
 function kinBox(maleId, femaleId) {
   if (!maleId || !femaleId) return `<p class="hint kin-note">수컷과 암컷을 고르면 입력된 혈통 안에서 5촌 이내 공통 조상이 있는지 확인합니다.</p>`;
   const list = kinship(maleId, femaleId);
@@ -1120,7 +1156,7 @@ function vSales() {
   for (const [y, list] of years) {
     const sum = list.reduce((n, g) => n + (+(g.sale || {}).price || 0), 0);
     h += `<section class="panel"><div class="ph3"><h3>${/^\d{4}$/.test(y) ? y + '년' : y}</h3><span class="sumline"><span><b>${list.length}마리</b></span>${sum ? `<span>합계 <b>${fmtWon(sum)}</b></span>` : ''}</span></div>
-      <ul class="rows">${list.map(g => { const s = g.sale || {}, sx = SEX[g.sex || 'u']; return `<li class="sale-li"><a class="rowbtn" href="#g-${g.id}"><span class="r1"><span class="mono">${esc(g.code || '')}</span> ${esc(gTitle(g))} <span class="sex ${sx.c}">${sx.s}</span></span><span class="r2">${esc(g.morph || '모프 미기록')} · ${esc(s.to || '분양받은 분 미기록')}</span><span class="rr"><span class="mono hint">${fmtD(s.date)}</span>${s.price ? `<span class="pill">${fmtWon(s.price)}</span>` : ''}</span></a><button class="icon-btn to-ref" data-act="to-ref" data-id="${g.id}" title="실제로 분양한 개체가 아니라 혈통을 잇기 위해 등록한 개체라면 혈관리용으로 옮기세요">혈관리용으로</button></li>`; }).join('')}</ul></section>`;
+      <ul class="rows">${list.map(g => { const s = g.sale || {}, sx = SEX[g.sex || 'u']; return `<li class="sale-li"><a class="rowbtn" href="#g-${g.id}"><span class="r1"><span class="mono">${esc(g.code || '')}</span> ${esc(gTitle(g))} <span class="sex ${sx.c}">${sx.s}</span></span><span class="r2">${esc(g.morph || '모프 미기록')} · ${esc(s.to || '분양받은 분 미기록')}</span><span class="rr"><span class="mono hint">${fmtD(s.date)}</span>${s.price ? `<span class="pill">${fmtWon(s.price)}</span>` : ''}</span></a>${feat('ref') ? `<button class="icon-btn to-ref" data-act="to-ref" data-id="${g.id}" title="실제로 분양한 개체가 아니라 혈통을 잇기 위해 등록한 개체라면 혈관리용으로 옮기세요">혈관리용으로</button>` : ''}</li>`; }).join('')}</ul></section>`;
   }
   return h;
 }
@@ -1136,21 +1172,32 @@ function vSetup() {
   const gAvatar = S.user && S.user.user_metadata && (S.user.user_metadata.avatar_url || S.user.user_metadata.picture);
   let h = `<div class="vhead"><div><h1 class="vtitle">설정</h1><p class="vsub">${esc(f.name)} · 내 권한: <b>${ROLE[S.role]}</b></p></div></div>`;
   if (admin) {
+    const u = U(), refN = [...S.geckos.values()].filter(g => gStatus(g) === 'ref').length;
+    const FEATS = [
+      ['breeding', '브리딩', '메이팅·산란·인큐베이터·해칭 기록, 메뉴의 브리딩 탭, 홈의 인큐베이터'],
+      ['ledger', '가계부', '수입·지출 기록, 홈의 이번 달 가계부, 개체별 손익, 입양가 입력. 관리자만 봅니다'],
+      ['ref', '혈관리용 개체', `내 개체가 아닌 부모·조부모를 등록해 혈통을 잇는 기능. 끄면 목록의 혈관리용 탭과 등록 버튼이 숨겨집니다${refN ? `. 이미 등록한 ${refN}마리는 혈통도에 그대로 보입니다` : ''}`]
+    ];
     h += `<form id="setform" class="panel form" novalidate>
-      <div class="ph3"><h3>농장과 브랜드</h3></div>
-      <div class="field"><label for="s-name">농장 이름</label><input id="s-name" value="${esc(f.name)}" autocomplete="off"><p class="hint">공개 카드에 ‘브리더’로 표시됩니다.</p></div>
+      ${f.features === undefined ? `<div class="notice warn"><p><b>데이터베이스 업데이트가 필요합니다.</b> 부르는 이름과 기능 켜기/끄기를 저장하려면 안내드린 SQL(schema.sql)을 Supabase에서 한 번 다시 실행해 주세요.</p></div>` : ''}
+      <div class="ph3"><h3>이름과 로고</h3></div>
+      <div class="field"><span class="lbl">어떻게 부를까요?</span>${unitPick('s-unit', u)}<p class="hint">화면의 안내 문구와 초대장에 이 말이 쓰입니다.</p></div>
+      <div class="field"><label for="s-name" id="s-name-l">${u} 이름</label><input id="s-name" value="${esc(f.name)}" autocomplete="off" placeholder="${NAME_EX[u]}"><p class="hint">맨 위 제목과 초대장에 쓰이고, 공개 카드에도 표시할 수 있습니다.</p></div>
       <div class="photo-pick"><div class="pp-prev logo" id="s-logo-prev">${logo ? `<img src="${esc(logo)}" alt="">` : '<span>로고 없음</span>'}</div>
         <div class="pp-ctl"><span class="lbl">브랜드 로고</span><div class="actions"><label class="btn small" for="s-logo">${logo ? '로고 바꾸기' : '로고 올리기'}</label>${logo ? '<button type="button" class="btn small" id="s-logo-del">로고 빼기</button>' : ''}</div><input id="s-logo" type="file" accept="image/*" hidden><p class="hint" id="s-logo-st">원 안에 꽉 차게 보여 줍니다. 정사각형이나 원형 로고가 잘 어울리고, 네모난 로고는 모서리가 잘릴 수 있습니다.</p></div></div>
       <div class="field"><span class="lbl">사진이 없는 개체에 보여 줄 이미지</span>
         <div class="seg radio">${[['logo', '브랜드 로고'], ['google', '내 구글 프로필'], ['default', '기본 게코 그림']].map(([k, t]) => `<label><input type="radio" name="s-ph" value="${k}"${(f.placeholder || 'logo') === k ? ' checked' : ''}${k === 'google' && !gAvatar ? ' disabled' : ''}><span>${t}</span></label>`).join('')}</div>
         <p class="hint">로고를 고르고 로고를 올리지 않았다면 기본 게코 그림이 나옵니다. 어느 경우든 ‘사진 없음’ 표시가 함께 붙습니다.</p></div>
+      <div class="ph3"><h3>사용할 기능</h3></div>
+      <p class="hint">쓰지 않는 기능은 꺼 두면 메뉴와 화면에서 숨겨집니다. 꺼도 기록은 지워지지 않고, 다시 켜면 그대로 보입니다.</p>
+      <div class="feats">${FEATS.map(([k, t, d]) => `<label class="feat"><span class="ft"><b>${t}</b><small>${d}</small></span><input type="checkbox" name="s-feat" value="${k}"${feat(k) ? ' checked' : ''} aria-label="${t} 사용"></label>`).join('')}</div>
       <div class="ph3"><h3>QR 공개 카드 기본값</h3></div>
       <p class="hint">항상 공개: 사진, 개체번호, 이름, 모프, 성별. 아래 항목은 여기서 정한 값이 기본이고, 개체마다 따로 바꿀 수 있습니다. 분양받은 분의 연락처는 공개되지 않습니다.</p>
-      <div class="pubgrid">${PUBF.map(([k, t]) => `<label class="check"><input type="checkbox" name="s-pub" value="${k}"${pd[k] ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <div class="pubgrid">${PUBF.map(([k, t]) => `<label class="check"><input type="checkbox" name="s-pub" value="${k}"${pd[k] ? ' checked' : ''}><span>${pubT(k, t)}</span></label>`).join('')}</div>
       <div class="ph3"><h3>급여 확인</h3></div>
       <div class="field"><span class="lbl">확인 방식</span>
         <div class="seg radio">${[['weekdays', '요일 지정'], ['interval', '며칠마다']].map(([k, t]) => `<label><input type="radio" name="s-fmode" value="${k}"${(s.feedMode || 'interval') === k ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div></div>
-      <div class="field" id="s-wd-f"${s.feedMode === 'weekdays' ? '' : ' hidden'}><span class="lbl">급여 요일 (농장 기본)</span>${wdPicker('s-wd', s.feedDays)}
+      <div class="field" id="s-wd-f"${s.feedMode === 'weekdays' ? '' : ' hidden'}><span class="lbl">급여 요일 (기본)</span>${wdPicker('s-wd', s.feedDays)}
         <p class="hint">급여 요일에는 목록 위에 ‘오늘 급여할 개체’가 뜨고, 지정 요일이 지났는데 기록이 없으면 ‘급여 놓침’으로 표시합니다. 해츨링처럼 주기가 다른 개체는 개체 정보 수정에서 따로 정할 수 있습니다.</p></div>
       <div class="field" id="s-days-f"${s.feedMode === 'weekdays' ? ' hidden' : ''}><label for="s-days">급여 확인 기준 (일)</label><input id="s-days" type="number" min="1" max="60" inputmode="numeric" value="${esc(s.feedAlertDays ?? DEF.feedAlertDays)}"><p class="hint">마지막 급여 후 이 날수가 지나면 목록 위에 표시합니다.</p></div>
       <div class="ph3"><h3>기록</h3></div>
@@ -1163,7 +1210,7 @@ function vSetup() {
       <div class="sh-foot"><button class="btn primary" type="submit" id="s-save">설정 저장</button></div>
     </form>`;
   } else {
-    h += `<section class="panel"><div class="ph3"><h3>농장</h3></div><div class="farmline">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : ''}<b>${esc(f.name)}</b></div><p class="hint">농장 설정은 관리자만 바꿀 수 있습니다.</p></section>`;
+    h += `<section class="panel"><div class="ph3"><h3>${U()}</h3></div><div class="farmline">${logo ? `<img data-ph src="${esc(logo)}" alt="">` : ''}<b>${esc(f.name)}</b></div><p class="hint">이름·기능·공개 설정은 관리자만 바꿀 수 있습니다.</p></section>`;
   }
   h += `<section class="panel"><div class="ph3"><h3>구성원</h3><span class="hint">${S.members.length}명</span></div>
     <ul class="rows">${S.members.map(m => {
@@ -1179,13 +1226,13 @@ function vSetup() {
       <p class="hint">구글 로그인이 ‘테스트’ 상태라면, 초대받는 분의 구글 계정을 Google Cloud 콘솔의 테스트 사용자에 먼저 추가해야 로그인할 수 있습니다.</p>`;
   }
   h += `</section>`;
-  h += `<section class="panel"><div class="ph3"><h3>내 농장</h3></div>
-    ${S.farms.length > 1 ? `<div class="field"><label for="farm-sw">지금 보고 있는 농장</label><select id="farm-sw" data-chg="farm-switch">${S.farms.map(x => `<option value="${esc(x.id)}"${x.id === f.id ? ' selected' : ''}>${esc(x.farm.name)} (${ROLE[x.role]})</option>`).join('')}</select></div>` : ''}
-    <div class="actions"><button class="btn" data-act="new-farm">새 농장 만들기</button><button class="btn danger" data-act="leave-farm">이 농장에서 나가기</button></div>
-    <p class="hint">나가면 이 농장의 개체를 더 이상 볼 수 없습니다. 농장에는 관리자가 최소 한 명 있어야 합니다.</p></section>`;
+  h += `<section class="panel"><div class="ph3"><h3>참여 중인 곳</h3><span class="hint">${S.farms.length}곳</span></div>
+    ${S.farms.length > 1 ? `<div class="field"><label for="farm-sw">지금 보고 있는 곳</label><select id="farm-sw" data-chg="farm-switch">${S.farms.map(x => `<option value="${esc(x.id)}"${x.id === f.id ? ' selected' : ''}>${esc(x.farm.name)} · ${unitOf(x.farm)} (${ROLE[x.role]})</option>`).join('')}</select></div>` : ''}
+    <div class="actions"><button class="btn" data-act="new-farm">새로 만들기</button><button class="btn danger" data-act="leave-farm">이 ${U()}에서 나가기</button></div>
+    <p class="hint">가족과 브랜드를 따로 만들어 오가며 볼 수 있습니다. 나가면 이 ${U()}의 개체를 더 이상 볼 수 없고, 관리자는 최소 한 명 있어야 합니다.</p></section>`;
   if (admin) h += `<section class="panel"><div class="ph3"><h3>백업</h3></div>
-    <p class="hint">이 농장의 개체·기록·산란·메이팅·설정을 파일 하나(JSON)로 내려받습니다. 사진 파일은 포함되지 않습니다. 가끔 한 번씩 받아 두면 안심입니다.</p>
-    <div class="actions"><a class="btn" href="#ledger">가계부 열기</a><button class="btn" data-act="backup">전체 데이터 백업 내려받기</button>${sampleN ? `<button class="btn danger" data-act="clear-samples">예시 개체 ${sampleN}마리 지우기</button>` : ''}</div></section>`;
+    <p class="hint">이 ${U()}의 개체·기록·산란·메이팅·가계부·설정을 파일 하나(JSON)로 내려받습니다. 사진 파일은 포함되지 않습니다. 가끔 한 번씩 받아 두면 안심입니다.</p>
+    <div class="actions">${feat('ledger') ? '<a class="btn" href="#ledger">가계부 열기</a>' : ''}<button class="btn" data-act="backup">전체 데이터 백업 내려받기</button>${sampleN ? `<button class="btn danger" data-act="clear-samples">예시 개체 ${sampleN}마리 지우기</button>` : ''}</div></section>`;
   h += `<section class="panel"><div class="ph3"><h3>계정</h3></div>
     <dl class="facts"><dt>로그인</dt><dd>${esc((S.user && S.user.email) || '—')}</dd><dt>QR 주소</dt><dd class="mono" style="font-size:13px">${esc(appUrl())}</dd></dl>
     <div class="actions"><a class="btn" href="#labels">QR 라벨 만들기</a><button class="btn" data-act="logout">로그아웃</button></div></section>`;
@@ -1211,6 +1258,7 @@ function wireSetup() {
     } catch { st.textContent = '로고를 올리지 못했습니다. 다른 이미지로 다시 시도해 주세요.'; }
     finally { save.disabled = false; lf.value = ''; }
   });
+  wireUnit(f, 's-unit', '#s-name-l', '#s-name');
   f.querySelectorAll('input[name=s-fmode]').forEach(r => r.addEventListener('change', () => {
     const wd = (f.querySelector('input[name=s-fmode]:checked') || {}).value === 'weekdays';
     $('#s-wd-f').hidden = !wd; $('#s-days-f').hidden = wd;
@@ -1227,11 +1275,15 @@ function wireSetup() {
     const ph = (f.querySelector('input[name=s-ph]:checked') || {}).value || 'logo';
     const meta = (S.user && S.user.user_metadata) || {};
     const pub = Object.fromEntries(PUBF.map(([k]) => [k, !!f.querySelector(`input[name=s-pub][value=${k}]`).checked]));
+    const unit = (f.querySelector('input[name=s-unit]:checked') || {}).value || '가족';
+    const fe = {...(S.farm.features || {}), unit, ...Object.fromEntries([...f.querySelectorAll('input[name=s-feat]')].map(i => [i.value, i.checked]))};
+    // 데이터베이스가 2.4판 전이면(features 칸 없음) 기능 설정은 빼고 저장
+    const features = S.farm.features === undefined ? {} : {features:fe};
     const btn = $('#s-save'); btn.disabled = true; btn.textContent = '저장 중…';
     try {
       const old = S.farm.logo_path;
       await q(sb.from('farms').update({
-        name:$('#s-name').value.trim() || '내 농장', logo_path:logoPath, placeholder:ph,
+        name:$('#s-name').value.trim() || '우리 게코', logo_path:logoPath, placeholder:ph, ...features,
         placeholder_url:ph === 'google' ? (meta.avatar_url || meta.picture || null) : null,
         public_defaults:pub, feed_alert_days:days >= 1 && days <= 60 ? days : (S.settings.feedAlertDays || 3), feed_mode:fmode, feed_days:fdays, code_prefix:$('#s-prefix').value.trim(), foods:foods.length ? foods : DEF.foods,
         updated_at:new Date().toISOString()
@@ -1361,7 +1413,7 @@ function openGeckoForm(id, pre = {}) {
   let photo = v.photo || null, uploading = false;
   const parentField = w => {
     const cur = v[w + 'Id'] ? 'id:' + v[w + 'Id'] : v[w + 'Ext'] ? 'ext' : '', isS = w === 'sire';
-    return `<div class="field"><label for="f-${w}">${isS ? '부 (아빠)' : '모 (엄마)'}</label><select id="f-${w}" data-ext="f-${w}-ext" data-role="${w}"><option value="">미상</option>${geckoOptions(isS ? isMaleish : isFemaleish, v[w + 'Id'], id)}<option value="ext"${cur === 'ext' ? ' selected' : ''}>이름만 적기 (직접 입력)</option><option value="__new">+ 새 혈관리용 개체 등록 (조부모까지 이을 때)</option></select>
+    return `<div class="field"><label for="f-${w}">${isS ? '부 (아빠)' : '모 (엄마)'}</label><select id="f-${w}" data-ext="f-${w}-ext" data-role="${w}"><option value="">미상</option>${geckoOptions(isS ? isMaleish : isFemaleish, v[w + 'Id'], id)}<option value="ext"${cur === 'ext' ? ' selected' : ''}>이름만 적기 (직접 입력)</option>${feat('ref') ? '<option value="__new">+ 새 혈관리용 개체 등록 (조부모까지 이을 때)</option>' : ''}</select>
       <input id="f-${w}-ext" placeholder="${isS ? '예: OO파충류 수컷, 릴리화이트' : '예: OO파충류 암컷, 할리퀸'}" value="${esc(v[w + 'Ext'] || '')}" autocomplete="off"${cur === 'ext' ? '' : ' hidden'}></div>`;
   };
   const sh = openSheet(`<form class="form" id="gform" novalidate>${sheetHead(g ? '개체 정보 수정' : isRef ? '혈관리용 개체 등록' : '개체 등록')}
@@ -1379,19 +1431,19 @@ function openGeckoForm(id, pre = {}) {
     <div class="grid2"><div class="field"><label for="f-acq">입양일</label><input id="f-acq" type="date" value="${esc(v.acquiredDate || '')}"></div>
       <div class="field"><label for="f-src">출처</label><select id="f-src">${Object.entries(SRC).map(([k, t]) => `<option value="${k}"${(v.source || 'buy') === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
     <div class="grid2"><div class="field"><label for="f-srcn">입양처 · 비고</label><input id="f-srcn" value="${esc(v.sourceNote || '')}" autocomplete="off"></div>
-      ${isRef ? '' : `<div class="field"><label for="f-price">입양가 (원)</label><input id="f-price" inputmode="numeric" autocomplete="off" placeholder="선택" value="${v.acquiredPrice ? Number(v.acquiredPrice).toLocaleString('ko-KR') : ''}"><p class="hint">가계부에 ‘개체 입양’ 지출로 들어갑니다.</p></div>`}</div>
+      ${isRef || !feat('ledger') ? '' : `<div class="field"><label for="f-price">입양가 (원)</label><input id="f-price" inputmode="numeric" autocomplete="off" placeholder="선택" value="${v.acquiredPrice ? Number(v.acquiredPrice).toLocaleString('ko-KR') : ''}"><p class="hint">가계부에 ‘개체 입양’ 지출로 들어갑니다.</p></div>`}</div>
     <fieldset class="fs"><legend>혈통 (부모)</legend>${parentField('sire')}${parentField('dam')}<p class="hint">목록에 있는 개체를 고르면 조부모까지 혈통도가 이어집니다.</p></fieldset>
-    ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS_OPT).map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
+    ${g ? `<div class="field"><label for="f-status">상태</label><select id="f-status">${Object.entries(STATUS_OPT).filter(([k]) => k !== 'ref' || feat('ref') || gStatus(g) === 'ref').map(([k, t]) => `<option value="${k}"${gStatus(g) === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label for="f-notes">메모</label><textarea id="f-notes" rows="3">${esc(v.notes || '')}</textarea></div>
     ${isRef ? '' : `<fieldset class="fs"><legend>급여 요일</legend>
-      <label class="check"><input type="checkbox" id="f-fdef"${v.feedDays && v.feedDays.length ? '' : ' checked'}><span>농장 기본 따르기<small>${S.settings.feedMode === 'weekdays' && S.settings.feedDays.length ? `지금 농장 기본: ${wdText(S.settings.feedDays)}` : `지금 농장 기본: ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일마다 확인`}</small></span></label>
+      <label class="check"><input type="checkbox" id="f-fdef"${v.feedDays && v.feedDays.length ? '' : ' checked'}><span>기본 급여 설정 따르기<small>${S.settings.feedMode === 'weekdays' && S.settings.feedDays.length ? `지금 기본: ${wdText(S.settings.feedDays)}` : `지금 기본: ${Number(S.settings.feedAlertDays) || DEF.feedAlertDays}일마다 확인`}</small></span></label>
       <div id="f-fdays"${v.feedDays && v.feedDays.length ? '' : ' hidden'}>${wdPicker('f-wd', v.feedDays || S.settings.feedDays)}<p class="hint">해츨링처럼 이 개체만 급여 요일이 다를 때 고릅니다. 매일 급여면 모든 요일을 고르세요.</p></div>
     </fieldset>`}
     <fieldset class="fs"><legend>QR 공개 카드</legend>
-      <label class="check"><input type="checkbox" id="f-pubon"${v.publicOn === false ? '' : ' checked'}><span>QR 공개 카드 사용<small>끄면 로그인한 농장 구성원만 볼 수 있습니다.</small></span></label>
+      <label class="check"><input type="checkbox" id="f-pubon"${v.publicOn === false ? '' : ' checked'}><span>QR 공개 카드 사용<small>끄면 로그인한 ${U()} 구성원만 볼 수 있습니다.</small></span></label>
       <p class="hint">항상 공개: 사진, 개체번호, 이름, 모프, 성별</p>
-      <label class="check"><input type="checkbox" id="f-pubdef"${v.publicFields ? '' : ' checked'}><span>농장 기본 설정 따르기<small>설정 화면의 공개 카드 기본값을 그대로 씁니다.</small></span></label>
-      <div class="pubgrid" id="f-pubf"${v.publicFields ? '' : ' hidden'}>${PUBF.map(([k, t]) => `<label class="check"><input type="checkbox" name="pf" value="${k}"${pubVis(v)[k] ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <label class="check"><input type="checkbox" id="f-pubdef"${v.publicFields ? '' : ' checked'}><span>기본 공개 설정 따르기<small>설정 화면의 공개 카드 기본값을 그대로 씁니다.</small></span></label>
+      <div class="pubgrid" id="f-pubf"${v.publicFields ? '' : ' hidden'}>${PUBF.map(([k, t]) => `<label class="check"><input type="checkbox" name="pf" value="${k}"${pubVis(v)[k] ? ' checked' : ''}><span>${pubT(k, t)}</span></label>`).join('')}</div>
       <p class="hint">분양받은 분의 연락처는 어떤 설정으로도 공개되지 않습니다.</p>
     </fieldset>
     <p class="err" hidden></p>
@@ -2034,24 +2086,27 @@ const ACT = {
   'switch-farm': t => switchFarm(t.dataset.farm, t.dataset.go),
   'accept-invite': async t => {
     busy(t, true, '참여하는 중…');
-    try { const fid = await q(sb.rpc('accept_invite', {c:t.dataset.code})); S.join.delete(t.dataset.code); lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('home'); toast('농장에 참여했습니다'); }
+    try { const fid = await q(sb.rpc('accept_invite', {c:t.dataset.code})); S.join.delete(t.dataset.code); lsSet('gk.farm', fid); resetFarmView(); await loadAll(); go('home'); toast(`${S.farm ? S.farm.name + '에 ' : ''}참여했습니다`); }
     catch (e) { busy(t, false); toast(errMsg(e), 'bad'); }
   },
   'new-farm': async () => {
-    const sh = openSheet(`<form class="form" id="nf" novalidate>${sheetHead('새 농장 만들기')}<div class="field"><label for="nf-name">농장 이름</label><input id="nf-name" autocomplete="off" placeholder="예: OO 크레스티드"></div><p class="hint">새 농장은 빈 상태로 시작하며, 설정에서 농장을 오가며 볼 수 있습니다.</p><p class="err" hidden></p><div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button class="btn primary" id="nf-save">만들기</button></div></form>`, {label:'새 농장'});
-    sh.querySelector('#nf').addEventListener('submit', async ev => { ev.preventDefault(); const b = sh.querySelector('#nf-save'); busy(b, true, '만드는 중…'); try { closeSheet(); await createFarm(fval(sh, 'nf-name')); } catch (e) { busy(b, false); toast(errMsg(e), 'bad'); } });
+    const u0 = U();
+    const sh = openSheet(`<form class="form" id="nf" novalidate>${sheetHead('새로 만들기')}<div class="field"><span class="lbl">어떻게 부를까요?</span>${unitPick('nf-unit', u0)}</div><div class="field"><label for="nf-name" id="nf-name-l">${u0} 이름</label><input id="nf-name" autocomplete="off" placeholder="${NAME_EX[u0]}"></div><p class="hint">새로 만든 곳은 빈 상태로 시작하며, 설정에서 오가며 볼 수 있습니다.</p><p class="err" hidden></p><div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button class="btn primary" id="nf-save">만들기</button></div></form>`, {label:'새로 만들기'});
+    wireUnit(sh, 'nf-unit', '#nf-name-l', '#nf-name');
+    sh.querySelector('#nf').addEventListener('submit', async ev => { ev.preventDefault(); const b = sh.querySelector('#nf-save'); busy(b, true, '만드는 중…'); try { const un = (sh.querySelector('input[name=nf-unit]:checked') || {}).value; closeSheet(); await createFarm(fval(sh, 'nf-name'), un); } catch (e) { busy(b, false); toast(errMsg(e), 'bad'); } });
   },
   'make-invite': () => makeInvite(),
   'copy-invite': t => { const inv = S.invites.find(x => x.code === t.dataset.code); if (inv) openInviteSheet(inv.code, inv.role); },
   'revoke-invite': async t => { try { await q(sb.from('farm_invites').delete().eq('code', t.dataset.code)); toast('초대 링크를 취소했습니다'); S.setupDirty = false; await refresh(); } catch (e) { toast(errMsg(e), 'bad'); } },
   'remove-member': async t => {
     const m = S.members.find(x => x.user_id === t.dataset.uid); if (!m) return;
-    if (!await confirmSheet('구성원을 내보낼까요?', `<b>${esc(m.display_name || m.email || '')}</b>님은 이 농장의 개체를 더 이상 볼 수 없습니다. 그동안 남긴 기록은 그대로 남습니다.`, '내보내기', true)) return;
+    if (!await confirmSheet('구성원을 내보낼까요?', `<b>${esc(m.display_name || m.email || '')}</b>님은 이 ${U()}의 개체를 더 이상 볼 수 없습니다. 그동안 남긴 기록은 그대로 남습니다.`, '내보내기', true)) return;
     try { await q(sb.from('farm_members').delete().eq('farm_id', S.farm.id).eq('user_id', m.user_id)); toast('내보냈습니다'); S.setupDirty = false; await refresh(); } catch (e) { toast(errMsg(e), 'bad'); }
   },
   'leave-farm': async () => {
-    if (!await confirmSheet('이 농장에서 나갈까요?', `<b>${esc(S.farm.name)}</b>의 개체를 더 이상 볼 수 없게 됩니다. 다시 들어오려면 관리자에게 새 초대 링크를 받아야 합니다.`, '나가기', true)) return;
-    try { await q(sb.from('farm_members').delete().eq('farm_id', S.farm.id).eq('user_id', S.user.id)); lsDel('gk.farm'); resetFarmView(); await loadAll(); go('home'); toast('농장에서 나갔습니다'); }
+    if (!await confirmSheet(`이 ${U()}에서 나갈까요?`, `<b>${esc(S.farm.name)}</b>의 개체를 더 이상 볼 수 없게 됩니다. 다시 들어오려면 관리자에게 새 초대 링크를 받아야 합니다.`, '나가기', true)) return;
+    const nm = S.farm.name;
+    try { await q(sb.from('farm_members').delete().eq('farm_id', S.farm.id).eq('user_id', S.user.id)); lsDel('gk.farm'); resetFarmView(); await loadAll(); go('home'); toast(`${nm}에서 나갔습니다`); }
     catch (e) { toast(errMsg(e), 'bad'); }
   },
   'login': () => login(),
