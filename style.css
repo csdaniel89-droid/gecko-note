@@ -815,3 +815,27 @@ input.sw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .sc-p{flex-wrap:wrap;row-gap:4px}
 .sc-p b{white-space:nowrap}
 @media (max-width:420px){.sc-p b,.sc-t{font-size:16px}.sc-b{padding:10px 12px 12px}}
+
+/* ===== 분양 게시판 검색 ===== */
+.bsearch{margin:2px 0 10px}
+.bsl{position:relative;display:block}
+.bsl svg{position:absolute;left:15px;top:50%;width:19px;height:19px;transform:translateY(-50%);fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;pointer-events:none}
+.bsl input{width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--surface);border:2px solid var(--edge);border-radius:99px;padding:10px 16px 10px 42px;min-height:48px}
+.bchips{flex-wrap:nowrap;overflow-x:auto;padding:2px 2px 6px;margin:0 0 6px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.bchips::-webkit-scrollbar{display:none}
+.bchips .chip{flex:none;cursor:pointer;font:inherit;font-size:13.5px}
+.chip[aria-pressed=true]{background:var(--sun);border-color:var(--edge);color:var(--sun-ink);font-weight:700}
+.chip .n{font-size:11.5px;color:var(--muted);font-weight:600}
+.chip[aria-pressed=true] .n{color:inherit;opacity:.75}
+.mchips .lbl{flex:none;align-self:center;font-size:12px;font-weight:700;color:var(--muted);margin-right:2px}
+.bhits{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px;padding:10px 12px;border-radius:16px;background:var(--sun-soft)}
+.bhits .lbl{font-size:12.5px;font-weight:700;color:var(--ink-2);margin-right:2px}
+.bcount{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;margin:2px 0 10px;font-size:14px}
+.linkbtn{background:none;border:0;padding:0;font:inherit;font-size:13px;font-weight:700;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.bc-k{font-size:12px;color:var(--accent);font-weight:700;margin-top:2px}
+@media (max-width:600px){
+  .btools{flex-wrap:nowrap;overflow-x:auto;padding:2px 2px 6px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .btools::-webkit-scrollbar{display:none}
+  .btools select,.btools .check{flex:none}
+  .btools select{min-height:40px;padding-top:6px;padding-bottom:6px}
+}

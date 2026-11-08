@@ -107,7 +107,8 @@ const S = {
   farms:[], farm:null, role:null, members:[], invites:[], needFarm:false,
   ledger:[], ledgerErr:'', lp:{mode:'month', y:+today().slice(0, 4), m:+today().slice(5, 7)},
   pub:new Map(), pubLoading:new Set(), join:new Map(), shop:new Map(), shopLoading:new Set(), shopSp:new Map(),
-  board:null, boardLoading:false, bView:'items', bSp:'all', bSex:'all', bSort:'new', bOpen:false,
+  board:null, boardLoading:false, bView:'items', bSp:'all', bSex:'all', bSort:'new', bOpen:false, bQ:'', bAge:'all', bPrice:'all', bMorph:'',
+  bbQ:'', bbSort:'recent', bbOpen:false,
   geckos:new Map(), clutches:new Map(), pairings:new Map(), settings:{...DEF},
   loaded:{g:false, c:false, p:false},
   logs:[], logGid:null, logsLoaded:false,
@@ -687,6 +688,67 @@ async function fetchBoard() {
   } catch (e) { S.board = {err:errMsg(e), at:Date.now()}; }
   S.boardLoading = false; schedule();
 }
+// 검색어 비교: 띄어쓰기·대소문자 무시. 전체 문구 또는 단어마다 모두 들어 있으면 일치
+const nsp = v => String(v || '').toLowerCase().replace(/\s+/g, '');
+function textHit(hay, q) {
+  const qq = String(q || '').trim(); if (!qq) return true;
+  const h = nsp(hay); if (h.includes(nsp(qq))) return true;
+  return qq.toLowerCase().split(/\s+/).filter(Boolean).every(t => h.includes(t));
+}
+const B_AGE = [['all', '모든 나이'], ['a0', '6개월 미만'], ['a1', '6개월~1년'], ['a2', '1~2년'], ['a3', '2년 이상']];
+const B_PRICE = [['all', '모든 가격'], ['p0', '10만 원 이하'], ['p1', '10만~30만 원'], ['p2', '30만~50만 원'], ['p3', '50만~100만 원'], ['p4', '100만 원 이상'], ['ask', '가격 문의']];
+const B_SORT = [['new', '최근 올린 순'], ['low', '가격 낮은 순'], ['high', '가격 높은 순'], ['young', '어린 순'], ['old', '나이 많은 순']];
+const ageMonths = x => x.hatch_date ? (dnum(today()) - dnum(x.hatch_date)) / 30.44 : null;
+const priceOf = x => (x.price != null && +x.price > 0) ? +x.price : null;
+const boardSp = x => SPK[x.species || 'crested'] || {k:x.species, n:x.species_name || '기타', c:x.species_class || 'reptile'};
+const morphTokens = m => String(m || '').split(/[\s,/·+]+/).map(t => t.trim()).filter(t => t.length >= 2);
+function boardItemHay(x) { return [x.code, x.name, x.morph, boardSp(x).n, SEX[x.sex || 'u'].t, x.fname, x.note, LSTATE[x.state]].join(' '); }
+function boardFilter(items, skip) {
+  return items.filter(x => (skip === 'sp' || S.bSp === 'all' || (x.species || 'crested') === S.bSp)
+    && (S.bSex === 'all' || sexGroup(x.sex || 'u') === S.bSex)
+    && (!S.bOpen || x.state !== 'reserved')
+    && (skip === 'morph' || !S.bMorph || morphTokens(x.morph).some(t => nsp(t) === nsp(S.bMorph)))
+    && (S.bAge === 'all' || (() => { const a = ageMonths(x); if (a == null) return false; return S.bAge === 'a0' ? a < 6 : S.bAge === 'a1' ? a >= 6 && a < 12 : S.bAge === 'a2' ? a >= 12 && a < 24 : a >= 24; })())
+    && (S.bPrice === 'all' || (() => { const v = priceOf(x); if (S.bPrice === 'ask') return v == null; if (v == null) return false;
+        return S.bPrice === 'p0' ? v <= 100000 : S.bPrice === 'p1' ? v > 100000 && v <= 300000 : S.bPrice === 'p2' ? v > 300000 && v <= 500000 : S.bPrice === 'p3' ? v > 500000 && v <= 1000000 : v > 1000000; })())
+    && textHit(boardItemHay(x), S.bQ));
+}
+const bFiltersOn = () => S.bQ || S.bSp !== 'all' || S.bSex !== 'all' || S.bAge !== 'all' || S.bPrice !== 'all' || S.bMorph || S.bOpen;
+function boardItemsHTML() {
+  const d = S.board && S.board.data; if (!d) return '';
+  const items = d.items || [], myId = S.auth === 'in' && S.farm ? S.farm.id : '';
+  const kinds = [...new Set(items.map(x => x.species || 'crested'))];
+  let shown = boardFilter(items);
+  const ag = x => ageMonths(x);
+  if (S.bSort === 'low') shown = [...shown].sort((a, b) => (priceOf(a) ?? Infinity) - (priceOf(b) ?? Infinity));
+  if (S.bSort === 'high') shown = [...shown].sort((a, b) => (priceOf(b) ?? -1) - (priceOf(a) ?? -1));
+  if (S.bSort === 'young') shown = [...shown].sort((a, b) => (ag(a) ?? Infinity) - (ag(b) ?? Infinity));
+  if (S.bSort === 'old') shown = [...shown].sort((a, b) => (ag(b) ?? -1) - (ag(a) ?? -1));
+  // 검색어와 맞는 업체도 함께 보여 줌
+  const brandHits = S.bQ ? (d.brands || []).filter(b => textHit([b.name, b.intro].join(' '), S.bQ)) : [];
+  let h = '';
+  if (brandHits.length) h += `<div class="bhits"><span class="lbl">업체 ${brandHits.length}곳</span>${brandHits.slice(0, 8).map(b => `<a class="chip" href="#shop-${esc(b.id)}">${esc(b.name)}<span class="n">${b.count}</span></a>`).join('')}</div>`;
+  h += `<div class="bcount"><b>${shown.length}마리</b>${bFiltersOn() ? ` <span class="muted">/ 전체 ${items.length}마리</span><button type="button" class="linkbtn" data-act="board-reset">조건 지우기</button>` : ''}</div>`;
+  if (!items.length) h += `<div class="empty"><h2>아직 올라온 분양 개체가 없습니다</h2><p>개체 화면의 ‘분양 등록’으로 올린 개체가 이곳에 모입니다.</p></div>`;
+  else if (!shown.length) h += `<div class="empty"><h2>조건에 맞는 개체가 없습니다</h2><p>검색어나 조건을 바꿔 보세요.</p><button type="button" class="btn" data-act="board-reset">조건 지우기</button></div>`;
+  else h += `<div class="shop-grid">${shown.map(x => saleCard(x, boardSp(x), kinds.length > 1, {id:x.fid, name:x.fname, logo:x.flogo, mine:x.fid === myId})).join('')}</div>`;
+  return h;
+}
+function boardBrandsHTML() {
+  const d = S.board && S.board.data; if (!d) return '';
+  const items = d.items || [], myId = S.auth === 'in' && S.farm ? S.farm.id : '';
+  const kindsOf = id => { const m = new Map(); items.filter(x => x.fid === id).forEach(x => { const n = boardSp(x).n; m.set(n, (m.get(n) || 0) + 1); }); return [...m.entries()]; };
+  let bs = (d.brands || []).filter(b => (!S.bbOpen || b.count > 0) && textHit([b.name, b.intro, kindsOf(b.id).map(([n]) => n).join(' ')].join(' '), S.bbQ));
+  if (S.bbSort === 'count') bs = [...bs].sort((a, b) => b.count - a.count || (b.last || '').localeCompare(a.last || ''));
+  if (S.bbSort === 'name') bs = [...bs].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ko'));
+  let h = `<div class="bcount"><b>${bs.length}곳</b>${S.bbQ || S.bbOpen ? ` <span class="muted">/ 전체 ${(d.brands || []).length}곳</span><button type="button" class="linkbtn" data-act="board-reset-b">조건 지우기</button>` : ''}</div>`;
+  if (!(d.brands || []).length) return h + `<div class="empty"><h2>아직 참여한 곳이 없습니다</h2><p>분양 페이지를 켜고 게시판에 함께 올리기를 고른 가족·브랜드가 이곳에 보입니다.</p></div>`;
+  if (!bs.length) return h + `<div class="empty"><h2>찾는 업체가 없습니다</h2><p>업체 이름이나 소개 글의 다른 낱말로 찾아보세요.</p></div>`;
+  return h + `<div class="bgrid">${bs.map(b => { const lg = b.logo ? S.urls.get(b.logo) : '', ks = kindsOf(b.id);
+    return `<a class="bcard" href="#shop-${esc(b.id)}">${lg ? `<img class="shop-logo" src="${esc(lg)}" alt="">` : `<span class="shop-logo ini">${esc((b.name || '?').slice(0, 1))}</span>`}
+      <span class="bc-b"><span class="pc-k">${b.unit === '브랜드' ? '브리더' : esc(b.unit || '')}${b.id === myId ? ' · 내 분양 페이지' : ''}</span><b>${esc(b.name || '')}</b>${b.intro ? `<small>${esc(b.intro)}</small>` : ''}${ks.length ? `<span class="bc-k">${ks.map(([n, c]) => `${esc(n)} ${c}`).join(' · ')}</span>` : ''}</span>
+      <span class="pill${b.count ? ' sun' : ''}">${b.count ? `분양 중 ${b.count}` : '지금 분양 없음'}</span></a>`; }).join('')}</div>`;
+}
 function vBoard() {
   if (!sb) return loadingHTML();
   const c = S.board;
@@ -695,8 +757,7 @@ function vBoard() {
   if (c.err) return `<div class="empty"><h2>분양 게시판을 불러오지 못했습니다</h2><p>${esc(c.err)}</p><button class="btn" data-act="board-retry">다시 시도</button></div>`;
   document.title = '분양 게시판';
   const d = c.data, items = d.items || [], brands = d.brands || [];
-  const signed = S.auth === 'in' && S.farm && !S.needFarm, myId = signed ? S.farm.id : '';
-  const spOfX = x => SPK[x.species || 'crested'] || {k:x.species, n:x.species_name || '기타', c:x.species_class || 'reptile'};
+  const signed = S.auth === 'in' && S.farm && !S.needFarm;
   const kinds = [...new Set(items.map(x => x.species || 'crested'))];
   if (S.bSp !== 'all' && !kinds.includes(S.bSp)) S.bSp = 'all';
   let h = `<div class="vhead"><div><h1 class="vtitle">분양 게시판</h1><p class="vsub">관리노트를 쓰는 가족·브랜드가 올린 분양 개체를 모아 봅니다.</p></div>
@@ -707,26 +768,29 @@ function vBoard() {
     if (!sc.on) h += `<div class="notice"><p>내 개체를 이곳에 올리려면 먼저 <b>설정 → 분양 페이지</b>를 켜고 연락처를 적어 주세요.</p><a class="btn small" href="#setup">설정으로</a></div>`;
     else if (!sc.board) h += `<div class="notice"><p>내 분양 페이지는 링크로만 볼 수 있고 게시판에는 보이지 않습니다. <b>설정 → 분양 페이지</b>에서 ‘분양 게시판에 함께 올리기’를 켜면 함께 보입니다.</p><a class="btn small" href="#setup">설정으로</a></div>`;
   }
-  h += `<div class="seg bview">${[['items', '개체 모아보기', items.length], ['brands', '브랜드별', brands.length]].map(([k, t, n]) => `<button data-act="board-view" data-v="${k}" aria-pressed="${S.bView === k}">${t}<span class="n">${n}</span></button>`).join('')}</div>`;
+  h += `<div class="seg bview">${[['items', '개체 찾기', items.length], ['brands', '업체 찾기', brands.length]].map(([k, t, n]) => `<button data-act="board-view" data-v="${k}" aria-pressed="${S.bView === k}">${t}<span class="n">${n}</span></button>`).join('')}</div>`;
   if (S.bView === 'brands') {
-    if (!brands.length) h += `<div class="empty"><h2>아직 참여한 곳이 없습니다</h2><p>분양 페이지를 켜고 게시판에 함께 올리기를 고른 가족·브랜드가 이곳에 보입니다.</p></div>`;
-    else h += `<div class="bgrid">${brands.map(b => { const lg = b.logo ? S.urls.get(b.logo) : '';
-      return `<a class="bcard" href="#shop-${esc(b.id)}">${lg ? `<img class="shop-logo" src="${esc(lg)}" alt="">` : `<span class="shop-logo ini">${esc((b.name || '?').slice(0, 1))}</span>`}
-        <span class="bc-b"><span class="pc-k">${b.unit === '브랜드' ? '브리더' : esc(b.unit || '')}${b.id === myId ? ' · 내 분양 페이지' : ''}</span><b>${esc(b.name || '')}</b>${b.intro ? `<small>${esc(b.intro)}</small>` : ''}</span>
-        <span class="pill${b.count ? ' sun' : ''}">${b.count ? `분양 중 ${b.count}` : '지금 분양 없음'}</span></a>`; }).join('')}</div>`;
+    h += `<div class="bsearch"><label class="bsl"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span class="vh">업체 검색</span><input id="bbq" type="search" data-inp="bbq" value="${esc(S.bbQ)}" placeholder="업체 이름·소개·키우는 종류로 찾기" autocomplete="off" enterkeyhint="search"></label></div>
+      <div class="toolbar btools"><select data-chg="bb-sort" aria-label="정렬">${[['recent', '최근 올린 순'], ['count', '분양 많은 순'], ['name', '이름순']].map(([k, t]) => `<option value="${k}"${S.bbSort === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        <label class="check inline"><input type="checkbox" data-chg="bb-open"${S.bbOpen ? ' checked' : ''}><span>분양 중인 곳만</span></label></div>
+      <div id="b-res">${boardBrandsHTML()}</div>`;
   } else {
-    let shown = items.filter(x => (S.bSp === 'all' || (x.species || 'crested') === S.bSp) && (S.bSex === 'all' || sexGroup(x.sex || 'u') === S.bSex) && (!S.bOpen || x.state !== 'reserved'));
-    const pv = x => (x.price != null && +x.price > 0) ? +x.price : null;
-    if (S.bSort === 'low') shown = [...shown].sort((a, b) => (pv(a) ?? Infinity) - (pv(b) ?? Infinity));
-    if (S.bSort === 'high') shown = [...shown].sort((a, b) => (pv(b) ?? -1) - (pv(a) ?? -1));
-    h += `<div class="toolbar btools">
-      ${kinds.length > 1 ? `<select data-chg="b-sp" aria-label="종류"><option value="all">모든 종류</option>${kinds.map(k => `<option value="${esc(k)}"${S.bSp === k ? ' selected' : ''}>${esc(spOfX(items.find(x => (x.species || 'crested') === k)).n)}</option>`).join('')}</select>` : ''}
-      <select data-chg="b-sex" aria-label="성별"><option value="all">모든 성별</option>${[['m', '수컷'], ['f', '암컷'], ['u', '미확인']].map(([k, t]) => `<option value="${k}"${S.bSex === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
-      <select data-chg="b-sort" aria-label="정렬">${[['new', '최근 올린 순'], ['low', '가격 낮은 순'], ['high', '가격 높은 순']].map(([k, t]) => `<option value="${k}"${S.bSort === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
-      <label class="check inline"><input type="checkbox" data-chg="b-open"${S.bOpen ? ' checked' : ''}><span>예약 중 빼기</span></label></div>`;
-    if (!items.length) h += `<div class="empty"><h2>아직 올라온 분양 개체가 없습니다</h2><p>개체 화면의 ‘분양 등록’으로 올린 개체가 이곳에 모입니다.</p></div>`;
-    else if (!shown.length) h += `<div class="empty"><h2>조건에 맞는 개체가 없습니다</h2><p>종류·성별 조건을 바꿔 보세요.</p></div>`;
-    else h += `<div class="shop-grid">${shown.map(x => saleCard(x, spOfX(x), kinds.length > 1, {id:x.fid, name:x.fname, logo:x.flogo, mine:x.fid === myId})).join('')}</div>`;
+    // 종류 → 모프 → 성별·나이·가격 순서로 좁혀 가기
+    const base = boardFilter(items, 'sp');
+    const spChips = kinds.length > 1 ? `<div class="chips bchips" role="group" aria-label="종류">${[['all', '모든 종류', base.length], ...kinds.map(k => [k, boardSp(items.find(x => (x.species || 'crested') === k)).n, base.filter(x => (x.species || 'crested') === k).length])].map(([k, t, n]) => `<button type="button" class="chip" data-act="board-sp" data-v="${esc(k)}" aria-pressed="${S.bSp === k}">${esc(t)}<span class="n">${n}</span></button>`).join('')}</div>` : '';
+    const mcount = new Map(); boardFilter(items, 'morph').forEach(x => new Set(morphTokens(x.morph).map(t => t)).forEach(t => mcount.set(t, (mcount.get(t) || 0) + 1)));
+    const morphs = [...mcount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko')).slice(0, 12);
+    if (S.bMorph && !morphs.some(([t]) => t === S.bMorph)) morphs.unshift([S.bMorph, 0]);
+    const morphChips = morphs.length ? `<div class="chips bchips mchips" role="group" aria-label="모프"><span class="lbl">모프</span>${morphs.map(([t, n]) => `<button type="button" class="chip" data-act="board-morph" data-v="${esc(t)}" aria-pressed="${S.bMorph === t}">${esc(t)}${n ? `<span class="n">${n}</span>` : ''}</button>`).join('')}</div>` : '';
+    h += `<div class="bsearch"><label class="bsl"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span class="vh">개체 검색</span><input id="bq" type="search" data-inp="bq" value="${esc(S.bQ)}" placeholder="모프·이름·번호·업체로 찾기 (예: 릴리 암컷)" autocomplete="off" enterkeyhint="search"></label></div>
+      ${spChips}${morphChips}
+      <div class="toolbar btools">
+        <select data-chg="b-sex" aria-label="성별"><option value="all">모든 성별</option>${[['m', '수컷'], ['f', '암컷'], ['u', '미확인']].map(([k, t]) => `<option value="${k}"${S.bSex === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        <select data-chg="b-age" aria-label="나이">${B_AGE.map(([k, t]) => `<option value="${k}"${S.bAge === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        <select data-chg="b-price" aria-label="가격">${B_PRICE.map(([k, t]) => `<option value="${k}"${S.bPrice === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        <select data-chg="b-sort" aria-label="정렬">${B_SORT.map(([k, t]) => `<option value="${k}"${S.bSort === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        <label class="check inline"><input type="checkbox" data-chg="b-open"${S.bOpen ? ' checked' : ''}><span>예약 중 빼기</span></label></div>
+      <div id="b-res">${boardItemsHTML()}</div>`;
   }
   h += `<footer class="pc-foot board-foot"><span>${APP_NAME}는 분양 글을 모아 보여 주는 곳이며 거래의 당사자가 아닙니다. 가격·건강 상태·거래 조건은 각 가족·브랜드에 직접 확인해 주세요.</span><span>${LAW_NOTE}</span></footer>`;
   return h;
@@ -2604,6 +2668,10 @@ const ACT = {
   'shop-retry': t => { S.shop.delete(t.dataset.id); render(); },
   'board-retry': () => { S.board = null; render(); },
   'board-view': t => { S.bView = t.dataset.v; render(); },
+  'board-sp': t => { S.bSp = t.dataset.v; S.bMorph = ''; render(); },
+  'board-morph': t => { S.bMorph = S.bMorph === t.dataset.v ? '' : t.dataset.v; render(); },
+  'board-reset': () => { Object.assign(S, {bQ:'', bSp:'all', bSex:'all', bAge:'all', bPrice:'all', bMorph:'', bOpen:false}); render(); },
+  'board-reset-b': () => { Object.assign(S, {bbQ:'', bbOpen:false}); render(); },
   'board-post': () => openBoardPost(),
   'shop-sp': t => { S.shopSp.set(t.dataset.id, t.dataset.v); render(); },
   'listing': t => openListingForm(t.dataset.id),
@@ -2688,7 +2756,10 @@ document.addEventListener('change', e => {
   const t = e.target, k = t.dataset && t.dataset.chg; if (!k) return;
   if (k === 'sexf') { S.sexFilter = t.value; render(); }
   if (k === 'spf') { S.spFilter = t.value; render(); }
-  if (k === 'b-sp') { S.bSp = t.value; render(); }
+  if (k === 'b-age') { S.bAge = t.value; render(); }
+  if (k === 'b-price') { S.bPrice = t.value; render(); }
+  if (k === 'bb-sort') { S.bbSort = t.value; render(); }
+  if (k === 'bb-open') { S.bbOpen = t.checked; render(); }
   if (k === 'b-sex') { S.bSex = t.value; render(); }
   if (k === 'b-sort') { S.bSort = t.value; render(); }
   if (k === 'b-open') { S.bOpen = t.checked; render(); }
@@ -2707,6 +2778,14 @@ document.addEventListener('change', e => {
   }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && sheets.length) closeSheet(); });
+// 분양 게시판 검색: 글자를 칠 때마다 결과 부분만 다시 그려 입력창 포커스를 유지
+document.addEventListener('input', e => {
+  const t = e.target, k = t.dataset && t.dataset.inp; if (!k) return;
+  const res = $('#b-res'); if (!res) return;
+  if (k === 'bq') { S.bQ = t.value; res.innerHTML = boardItemsHTML(); }
+  if (k === 'bbq') { S.bbQ = t.value; res.innerHTML = boardBrandsHTML(); }
+});
+document.addEventListener('keydown', e => { const t = e.target; if (e.key === 'Enter' && t.dataset && t.dataset.inp) { e.preventDefault(); t.blur(); } });
 document.addEventListener('error', e => { const t = e.target; if (t && t.tagName === 'IMG' && t.hasAttribute('data-ph')) t.remove(); }, true);
 $('#q').addEventListener('input', e => { S.q = e.target.value; if (route().v !== 'list') go('list'); else render(); });
 $('#q').addEventListener('keydown', e => {
