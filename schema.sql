@@ -1,4 +1,4 @@
--- 게코 관리노트 · Supabase 데이터베이스 구조 (2.6판: 가족·브랜드 단위 관리·구성원·공개 카드·혈관리용 개체·급여 요일·가계부·기능 켜기/끄기·여러 종류(파충류·양서류)·분양 페이지·신고 도우미)
+-- 게코 관리노트 · Supabase 데이터베이스 구조 (2.7판: 가족·브랜드 단위 관리·구성원·공개 카드·혈관리용 개체·급여 요일·가계부·기능 켜기/끄기·여러 종류(파충류·양서류)·분양 페이지·분양 게시판·신고 도우미)
 -- Supabase 관리 화면 → SQL Editor → New query 에 이 파일 전체를 붙여 넣고 Run 을 누르세요.
 -- 처음 설치할 때도, 1판에서 올릴 때도 같은 파일을 쓰면 됩니다. 여러 번 실행해도 안전합니다.
 -- 1판에서 올리면 기존 개체·기록·산란·메이팅·설정이 '우리 게코'로 자동으로 옮겨집니다.
@@ -172,6 +172,7 @@ alter table public.geckos add column if not exists feed_every int check (feed_ev
 --   died_at: 사망(폐사)일 — 폐사 신고 기한 계산용
 --   reports: 신고한 날 {"in": 양수 신고, "out": 양도 신고, "dead": 폐사 신고}
 --   분양 페이지 사용 여부·소개·연락처는 farms.features 의 "shop" 에 저장합니다
+--   (2.7판) "shop": {"board": true} 이면 분양 게시판에도 함께 올라갑니다
 alter table public.geckos add column if not exists listing jsonb check (listing is null or jsonb_typeof(listing) = 'object');
 alter table public.geckos add column if not exists died_at date;
 alter table public.geckos add column if not exists reports jsonb not null default '{}' check (jsonb_typeof(reports) = 'object');
@@ -507,8 +508,49 @@ begin
       ) x), '[]'::jsonb));
 end $$;
 
+-- 분양 게시판 (2.7판): 분양 페이지를 켜고 '분양 게시판에 함께 올리기'를 고른 곳들의 분양 개체를 모아 보여 줌
+--   brands: 참여한 가족·브랜드 목록(분양 중인 개체 수), items: 최근 분양 등록 순 개체 (최대 lim개)
+create or replace function public.public_board(lim int default 300) returns jsonb
+language sql stable security definer set search_path = public as $$
+  with shops as (
+    select f.id, f.name, f.logo_path, f.features, coalesce(f.public_defaults, '{}'::jsonb) as pdef
+    from public.farms f
+    where coalesce((f.features #>> '{shop,on}')::boolean, false)
+      and coalesce((f.features #>> '{shop,board}')::boolean, false)
+  ), listed as (
+    select g.id, g.code, g.name, g.morph, g.sex, g.photo_path, g.species, g.hatch_date, g.hatch_mode, g.listing, g.public_fields, g.updated_at,
+           s.id as fid, s.name as fname, s.logo_path as flogo, s.features as ffeat, s.pdef
+    from public.geckos g join shops s on s.id = g.farm_id
+    where g.status = 'active' and g.public_on and jsonb_typeof(g.listing) = 'object'
+  ), recent as (
+    select * from listed
+    order by listing ->> 'since' desc nulls last, updated_at desc
+    limit greatest(1, least(coalesce(lim, 300), 500))
+  )
+  select jsonb_build_object(
+    'brands', coalesce((
+      select jsonb_agg(jsonb_build_object(
+          'id', s.id, 'name', s.name, 'logo', s.logo_path, 'unit', coalesce(s.features ->> 'unit', '가족'),
+          'intro', s.features #>> '{shop,intro}', 'count', c.n, 'last', c.last)
+        order by c.n > 0 desc, c.last desc nulls last, s.name)
+      from shops s
+      cross join lateral (select count(*) as n, max(l.listing ->> 'since') as last from listed l where l.fid = s.id) c), '[]'::jsonb),
+    'items', coalesce((
+      select jsonb_agg(jsonb_build_object(
+          'id', r.id, 'code', r.code, 'name', r.name, 'morph', r.morph, 'sex', r.sex, 'photo', r.photo_path, 'species', r.species,
+          'species_name', (select e ->> 'n' from jsonb_array_elements(case when jsonb_typeof(r.ffeat -> 'species') = 'array' then r.ffeat -> 'species' else '[]'::jsonb end) e where e ->> 'k' = r.species limit 1),
+          'species_class', (select e ->> 'c' from jsonb_array_elements(case when jsonb_typeof(r.ffeat -> 'species') = 'array' then r.ffeat -> 'species' else '[]'::jsonb end) e where e ->> 'k' = r.species limit 1),
+          'hatch_date', case when coalesce(((r.pdef || coalesce(r.public_fields, '{}'::jsonb)) ->> 'hatch')::boolean, false) then r.hatch_date end,
+          'hatch_mode', case when coalesce(((r.pdef || coalesce(r.public_fields, '{}'::jsonb)) ->> 'hatch')::boolean, false) then r.hatch_mode end,
+          'price', r.listing -> 'price', 'note', r.listing ->> 'note', 'state', coalesce(r.listing ->> 'state', 'open'), 'since', r.listing ->> 'since',
+          'fid', r.fid, 'fname', r.fname, 'flogo', r.flogo)
+        order by r.listing ->> 'since' desc nulls last, r.updated_at desc)
+      from recent r), '[]'::jsonb));
+$$;
+
 grant execute on function public.public_gecko(text, boolean) to anon, authenticated;
 grant execute on function public.public_shop(text)            to anon, authenticated;
+grant execute on function public.public_board(int)            to anon, authenticated;
 grant execute on function public.invite_info(text)            to anon, authenticated;
 grant execute on function public.create_farm(text, text)      to authenticated;
 grant execute on function public.accept_invite(text)          to authenticated;

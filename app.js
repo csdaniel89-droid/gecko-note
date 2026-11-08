@@ -107,6 +107,7 @@ const S = {
   farms:[], farm:null, role:null, members:[], invites:[], needFarm:false,
   ledger:[], ledgerErr:'', lp:{mode:'month', y:+today().slice(0, 4), m:+today().slice(5, 7)},
   pub:new Map(), pubLoading:new Set(), join:new Map(), shop:new Map(), shopLoading:new Set(), shopSp:new Map(),
+  board:null, boardLoading:false, bView:'items', bSp:'all', bSex:'all', bSort:'new', bOpen:false,
   geckos:new Map(), clutches:new Map(), pairings:new Map(), settings:{...DEF},
   loaded:{g:false, c:false, p:false},
   logs:[], logGid:null, logsLoaded:false,
@@ -435,7 +436,7 @@ function route() {
   if (h.startsWith('join-')) return {v:'join', code:h.slice(5)};
   if (h.startsWith('map-')) return {v:'map', id:h.slice(4)};
   if (h.startsWith('shop-')) return {v:'shop', id:h.slice(5)};
-  if (['breeding', 'sales', 'setup', 'labels', 'map', 'list', 'ledger', 'reports'].includes(h)) return {v:h};
+  if (['breeding', 'sales', 'setup', 'labels', 'map', 'list', 'ledger', 'reports', 'board'].includes(h)) return {v:h};
   return {v:'home'};
 }
 function go(h) { if (location.hash.slice(1) === h) render(); else location.hash = h; }
@@ -444,7 +445,7 @@ function schedule() { if (pending) return; pending = true; requestAnimationFrame
 const NEED = {
   'new-gecko':'admin', 'edit-gecko':'admin', 'sale':'admin', 'sale-cancel':'admin', 'new-pair':'admin', 'edit-pair':'admin',
   'new-clutch':'admin', 'edit-clutch':'admin', 'load-samples':'admin', 'clear-samples':'admin', 'backup':'admin',
-  'new-ledger':'admin', 'edit-ledger':'admin', 'ledger-csv':'admin', 'listing':'admin', 'report-done':'admin', 'report-undo':'admin',
+  'new-ledger':'admin', 'edit-ledger':'admin', 'ledger-csv':'admin', 'listing':'admin', 'board-post':'admin', 'report-done':'admin', 'report-undo':'admin',
   'make-invite':'admin', 'revoke-invite':'admin', 'remove-member':'admin', 'to-ref':'admin',
   'log':'log', 'log-edit':'log', 'bulk':'log', 'bulk-feed':'log', 'feed-over':'log'
 };
@@ -466,10 +467,11 @@ function render() {
     if ((S.auth === 'out') && (r.v === 'gecko' || r.v === 'pub')) { view.innerHTML = vPublic(r.id, false); drawChart(); return; }
     if (S.auth === 'out' && r.v === 'join') { view.innerHTML = vJoin(r.code); return; }
     if (S.auth === 'out' && r.v === 'shop') { view.innerHTML = vShop(r.id); return; }
+    if (S.auth === 'out' && r.v === 'board') { view.innerHTML = vBoard(); return; }
     view.innerHTML = vAuth(); return;
   }
   if (r.v === 'join') { view.innerHTML = vJoin(r.code); return; }
-  if (r.v === 'shop') { view.innerHTML = vShop(r.id); setTabs('list'); return; }
+  if (r.v === 'shop') { view.innerHTML = vShop(r.id); setTabs('board'); return; }
   if (!S.loaded.g) { view.innerHTML = loadingHTML(); return; }
   if (S.conn === 'err') { view.innerHTML = connErr(); return; }
   if (S.needFarm) { view.innerHTML = vOnboard(); wireOnboard(); return; }
@@ -482,6 +484,7 @@ function render() {
   else if (r.v === 'ledger') html = feat('ledger') ? vLedger() : offNote('가계부', '수입·지출 기록과 개체별 손익을 보는 기능입니다.');
   else if (r.v === 'breeding') html = feat('breeding') ? vBreeding() : offNote('브리딩', '메이팅·산란·인큐베이터·해칭을 기록하는 기능입니다.');
   else if (r.v === 'sales') html = vSales();
+  else if (r.v === 'board') html = vBoard();
   else if (r.v === 'reports') html = feat('report') ? vReports() : offNote('신고 도우미', '분양·입양·폐사 때 야생동물 신고 기한을 챙기는 기능입니다.');
   else if (r.v === 'setup') html = vSetup();
   else if (r.v === 'labels') html = vLabels();
@@ -614,7 +617,21 @@ function listingPanel(l, shop) {
     ${l.note ? `<p class="l-note">${esc(l.note)}</p>` : ''}
     ${shop ? contactBtns(shop) : ''}
     ${shop ? `<a class="more" href="#shop-${esc(shop.id)}">${esc(shop.name || '')}의 분양 개체 모두 보기 →</a>` : ''}
+    <a class="more" href="#board">분양 게시판에서 다른 개체 보기 →</a>
     <p class="hint">거래는 분양하는 분과 직접 진행합니다. ${LAW_NOTE}</p></section>`;
+}
+// 분양 카드 한 장 (분양 페이지·분양 게시판 공용). brand가 있으면 아래에 브랜드 줄을 붙임
+function saleCard(x, sp, showSp, brand) {
+  const sx = SEX[x.sex || 'u'];
+  const pg = {id:x.id, code:x.code || '', name:x.name || '', morph:x.morph || '', photo:x.photo, species:x.species, _spc:sp.c, _pub:true, _fb:''};
+  const age = x.hatch_date ? hatchAge({hatchDate:x.hatch_date, hatchMode:x.hatch_mode}) : '';
+  const bl = brand && brand.logo ? S.urls.get(brand.logo) : '';
+  return `<div class="scard"><a class="sc-main" href="#g-${esc(x.id)}">${photoTag(pg, 'sc-img')}<span class="sc-b">
+      ${showSp || sp.k !== 'crested' || (brand && brand.mine) ? `<span class="sc-sp"><span>${showSp || sp.k !== 'crested' ? esc(sp.n) : ''}</span>${brand && brand.mine ? '<span class="pill sun">내 분양</span>' : ''}</span>` : ''}
+      <span class="sc-t">${x.code ? `<span class="mono">${esc(x.code)}</span> ` : ''}${esc(x.name || x.morph || '')}</span>
+      <span class="sc-m"><span class="sex ${sx.c}">${sx.s} ${sx.t}</span>${x.morph && x.name ? ` · ${esc(x.morph)}` : ''}${age ? ` · ${esc(age)}` : ''}</span>
+      <span class="sc-p"><b>${esc(priceText(x.price))}</b>${x.state === 'reserved' ? '<span class="pill warn">예약 중</span>' : ''}</span>
+    </span></a>${brand ? `<a class="sc-brand" href="#shop-${esc(brand.id)}">${bl ? `<img src="${esc(bl)}" alt="">` : `<span class="ini">${esc((brand.name || '?').slice(0, 1))}</span>`}<span>${esc(brand.name || '')}</span>${CHEV}</a>` : ''}</div>`;
 }
 async function fetchShop(fid) {
   if (S.shopLoading.has(fid) || !sb) return;
@@ -644,7 +661,7 @@ function vShop(fid) {
   const logo = d.logo && S.urls.get(d.logo);
   const mine = S.auth === 'in' && S.farms.some(x => x.id === d.id);
   let h = mine ? `<div class="notice"><p><b>내 분양 페이지</b> · 링크를 받은 분에게 이렇게 보입니다. 개체 화면의 <b>분양 등록</b>으로 개체를 올리거나 내릴 수 있습니다.</p><a class="btn small" href="#setup">설정으로</a></div>` : '';
-  h += `<article class="shop"><header class="panel pop shop-h">
+  h += `<article class="shop"><a class="back" href="#board">← 분양 게시판</a><header class="panel pop shop-h">
       <div class="shop-id">${logo ? `<img class="shop-logo" data-ph src="${esc(logo)}" alt="">` : `<span class="shop-logo ini">${esc((d.name || '?').slice(0, 1))}</span>`}
         <div><span class="pc-k">${d.unit === '브랜드' ? '브리더' : esc(d.unit || '')} · 분양</span><h1>${esc(d.name || '')}</h1></div></div>
       ${d.intro ? `<p class="shop-intro">${esc(d.intro)}</p>` : ''}
@@ -652,19 +669,76 @@ function vShop(fid) {
     </header>`;
   if (kinds.length > 1) h += `<div class="seg shop-seg">${[['all', '전체', items.length], ...kinds.map(k => [k, spOfK(k).n, items.filter(x => (x.species || 'crested') === k).length])].map(([k, t, n]) => `<button data-act="shop-sp" data-id="${esc(fid)}" data-v="${esc(k)}" aria-pressed="${sel === k}">${esc(t)}<span class="n">${n}</span></button>`).join('')}</div>`;
   if (!shown.length) h += `<div class="empty"><h2>지금 분양 중인 개체가 없습니다</h2><p>새 개체가 올라오면 이곳에 보입니다.</p></div>`;
-  else h += `<div class="shop-grid">${shown.map(x => {
-    const sp = spOfK(x.species || 'crested'), sx = SEX[x.sex || 'u'];
-    const pg = {id:x.id, code:x.code || '', name:x.name || '', morph:x.morph || '', photo:x.photo, species:x.species, _spc:sp.c, _pub:true, _fb:''};
-    const age = x.hatch_date ? hatchAge({hatchDate:x.hatch_date, hatchMode:x.hatch_mode}) : '';
-    return `<a class="scard" href="#g-${esc(x.id)}">${photoTag(pg, 'sc-img')}<span class="sc-b">
-        ${kinds.length > 1 || sp.k !== 'crested' ? `<span class="sc-sp">${esc(sp.n)}</span>` : ''}
-        <span class="sc-t">${x.code ? `<span class="mono">${esc(x.code)}</span> ` : ''}${esc(x.name || x.morph || '')}</span>
-        <span class="sc-m"><span class="sex ${sx.c}">${sx.s} ${sx.t}</span>${x.morph && x.name ? ` · ${esc(x.morph)}` : ''}${age ? ` · ${esc(age)}` : ''}</span>
-        <span class="sc-p"><b>${esc(priceText(x.price))}</b>${x.state === 'reserved' ? '<span class="pill warn">예약 중</span>' : ''}</span>
-      </span></a>`;
-  }).join('')}</div>`;
+  else h += `<div class="shop-grid">${shown.map(x => saleCard(x, spOfK(x.species || 'crested'), kinds.length > 1)).join('')}</div>`;
   h += `<footer class="pc-foot"><span>${APP_NAME}로 만든 분양 페이지 · 개체를 누르면 혈통 등 자세한 정보를 볼 수 있습니다.</span><span>거래는 분양하는 분과 직접 진행합니다. ${LAW_NOTE}</span></footer></article>`;
   return h;
+}
+
+/* ---------- 분양 게시판 ---------- */
+// 분양 페이지를 켜고 '분양 게시판에 함께 올리기'를 고른 가족·브랜드의 분양 개체를 모아 보여 줌 (로그인 없이도 볼 수 있음)
+async function fetchBoard() {
+  if (S.boardLoading || !sb) return;
+  S.boardLoading = true;
+  try {
+    const d = await q(sb.rpc('public_board', {lim:300}));
+    const v = d || {brands:[], items:[]};
+    await signUrls([...(v.items || []).flatMap(x => [x.photo, x.flogo]), ...(v.brands || []).map(b => b.logo)]);
+    S.board = {data:v, at:Date.now()};
+  } catch (e) { S.board = {err:errMsg(e), at:Date.now()}; }
+  S.boardLoading = false; schedule();
+}
+function vBoard() {
+  if (!sb) return loadingHTML();
+  const c = S.board;
+  if (!c || Date.now() - c.at > 60000) fetchBoard();
+  if (!c) return loadingHTML('분양 게시판을 불러오는 중…');
+  if (c.err) return `<div class="empty"><h2>분양 게시판을 불러오지 못했습니다</h2><p>${esc(c.err)}</p><button class="btn" data-act="board-retry">다시 시도</button></div>`;
+  document.title = '분양 게시판';
+  const d = c.data, items = d.items || [], brands = d.brands || [];
+  const signed = S.auth === 'in' && S.farm && !S.needFarm, myId = signed ? S.farm.id : '';
+  const spOfX = x => SPK[x.species || 'crested'] || {k:x.species, n:x.species_name || '기타', c:x.species_class || 'reptile'};
+  const kinds = [...new Set(items.map(x => x.species || 'crested'))];
+  if (S.bSp !== 'all' && !kinds.includes(S.bSp)) S.bSp = 'all';
+  let h = `<div class="vhead"><div><h1 class="vtitle">분양 게시판</h1><p class="vsub">관리노트를 쓰는 가족·브랜드가 올린 분양 개체를 모아 봅니다.</p></div>
+    ${signed ? '<div class="actions"><button class="btn primary" data-act="board-post">+ 분양 글 올리기</button></div>' : ''}</div>`;
+  if (S.auth === 'out') h += `<div class="notice"><p>${APP_NAME}로 내 개체를 관리하고 분양 글도 올리려면 로그인하세요.</p><a class="btn small" href="#home">로그인</a></div>`;
+  if (signed && can('admin')) {
+    const sc = shopCfg();
+    if (!sc.on) h += `<div class="notice"><p>내 개체를 이곳에 올리려면 먼저 <b>설정 → 분양 페이지</b>를 켜고 연락처를 적어 주세요.</p><a class="btn small" href="#setup">설정으로</a></div>`;
+    else if (!sc.board) h += `<div class="notice"><p>내 분양 페이지는 링크로만 볼 수 있고 게시판에는 보이지 않습니다. <b>설정 → 분양 페이지</b>에서 ‘분양 게시판에 함께 올리기’를 켜면 함께 보입니다.</p><a class="btn small" href="#setup">설정으로</a></div>`;
+  }
+  h += `<div class="seg bview">${[['items', '개체 모아보기', items.length], ['brands', '브랜드별', brands.length]].map(([k, t, n]) => `<button data-act="board-view" data-v="${k}" aria-pressed="${S.bView === k}">${t}<span class="n">${n}</span></button>`).join('')}</div>`;
+  if (S.bView === 'brands') {
+    if (!brands.length) h += `<div class="empty"><h2>아직 참여한 곳이 없습니다</h2><p>분양 페이지를 켜고 게시판에 함께 올리기를 고른 가족·브랜드가 이곳에 보입니다.</p></div>`;
+    else h += `<div class="bgrid">${brands.map(b => { const lg = b.logo ? S.urls.get(b.logo) : '';
+      return `<a class="bcard" href="#shop-${esc(b.id)}">${lg ? `<img class="shop-logo" src="${esc(lg)}" alt="">` : `<span class="shop-logo ini">${esc((b.name || '?').slice(0, 1))}</span>`}
+        <span class="bc-b"><span class="pc-k">${b.unit === '브랜드' ? '브리더' : esc(b.unit || '')}${b.id === myId ? ' · 내 분양 페이지' : ''}</span><b>${esc(b.name || '')}</b>${b.intro ? `<small>${esc(b.intro)}</small>` : ''}</span>
+        <span class="pill${b.count ? ' sun' : ''}">${b.count ? `분양 중 ${b.count}` : '지금 분양 없음'}</span></a>`; }).join('')}</div>`;
+  } else {
+    let shown = items.filter(x => (S.bSp === 'all' || (x.species || 'crested') === S.bSp) && (S.bSex === 'all' || sexGroup(x.sex || 'u') === S.bSex) && (!S.bOpen || x.state !== 'reserved'));
+    const pv = x => (x.price != null && +x.price > 0) ? +x.price : null;
+    if (S.bSort === 'low') shown = [...shown].sort((a, b) => (pv(a) ?? Infinity) - (pv(b) ?? Infinity));
+    if (S.bSort === 'high') shown = [...shown].sort((a, b) => (pv(b) ?? -1) - (pv(a) ?? -1));
+    h += `<div class="toolbar btools">
+      ${kinds.length > 1 ? `<select data-chg="b-sp" aria-label="종류"><option value="all">모든 종류</option>${kinds.map(k => `<option value="${esc(k)}"${S.bSp === k ? ' selected' : ''}>${esc(spOfX(items.find(x => (x.species || 'crested') === k)).n)}</option>`).join('')}</select>` : ''}
+      <select data-chg="b-sex" aria-label="성별"><option value="all">모든 성별</option>${[['m', '수컷'], ['f', '암컷'], ['u', '미확인']].map(([k, t]) => `<option value="${k}"${S.bSex === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+      <select data-chg="b-sort" aria-label="정렬">${[['new', '최근 올린 순'], ['low', '가격 낮은 순'], ['high', '가격 높은 순']].map(([k, t]) => `<option value="${k}"${S.bSort === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+      <label class="check inline"><input type="checkbox" data-chg="b-open"${S.bOpen ? ' checked' : ''}><span>예약 중 빼기</span></label></div>`;
+    if (!items.length) h += `<div class="empty"><h2>아직 올라온 분양 개체가 없습니다</h2><p>개체 화면의 ‘분양 등록’으로 올린 개체가 이곳에 모입니다.</p></div>`;
+    else if (!shown.length) h += `<div class="empty"><h2>조건에 맞는 개체가 없습니다</h2><p>종류·성별 조건을 바꿔 보세요.</p></div>`;
+    else h += `<div class="shop-grid">${shown.map(x => saleCard(x, spOfX(x), kinds.length > 1, {id:x.fid, name:x.fname, logo:x.flogo, mine:x.fid === myId})).join('')}</div>`;
+  }
+  h += `<footer class="pc-foot board-foot"><span>${APP_NAME}는 분양 글을 모아 보여 주는 곳이며 거래의 당사자가 아닙니다. 가격·건강 상태·거래 조건은 각 가족·브랜드에 직접 확인해 주세요.</span><span>${LAW_NOTE}</span></footer>`;
+  return h;
+}
+function openBoardPost() {
+  if (!can('admin')) return;
+  if (!shopOn()) { go('setup'); toast('먼저 설정 → 분양 페이지를 켜 주세요'); return; }
+  const cands = [...S.geckos.values()].filter(g => gStatus(g) === 'active' && !g.sample).sort(byCode);
+  const sh = openSheet(`<div class="form">${sheetHead('분양 글 올리기')}<p class="hint">분양할 개체를 고르면 분양가와 소개 글을 적는 화면으로 넘어갑니다.${shopCfg().board ? '' : ' 지금은 분양 게시판에 함께 올리기가 꺼져 있어 내 분양 페이지에만 보입니다.'}</p>
+    ${cands.length ? `<ul class="rows pick-list">${cands.map(g => `<li><button type="button" class="pick" data-pick="${esc(g.id)}">${photoTag(g, 'thumb')}<span class="pk-b"><b>${esc(gLabel(g))}</b><small>${[multiSp() ? spOf(g).n : '', g.morph, SEX[g.sex || 'u'].t].filter(Boolean).map(esc).join(' · ')}</small></span>${g.listing ? `<span class="pill sun">${LSTATE[g.listing.state] || '분양 중'}</span>` : !g.publicOn ? '<span class="pill">공개 카드 꺼짐</span>' : ''}</button></li>`).join('')}</ul>` : '<p class="muted">보유 중인 개체가 없습니다.</p>'}
+    <div class="sh-foot"><span class="sp"></span><button type="button" class="btn" data-act="close-sheet">닫기</button></div></div>`, {label:'분양 글 올리기'});
+  sh.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => { const id = b.dataset.pick; closeSheet(); openListingForm(id); }));
 }
 
 /* ---------- invite & first farm ---------- */
@@ -1418,6 +1492,7 @@ function vSetup() {
       <div class="ph3"><h3>분양 페이지</h3></div>
       <div class="feats"><label class="feat"><span class="ft"><b>분양 페이지 사용</b><small>개체 화면에서 ‘분양 등록’한 개체를 모아 보여 주는 공개 페이지입니다. 로그인 없이 볼 수 있어 인스타그램 프로필이나 카카오톡에 링크를 걸어 두기 좋습니다.</small></span><input type="checkbox" id="s-shop"${sc.on ? ' checked' : ''} aria-label="분양 페이지 사용"></label></div>
       <div id="s-shop-f"${sc.on ? '' : ' hidden'}>
+        <div class="feats"><label class="feat"><span class="ft"><b>분양 게시판에 함께 올리기</b><small>다른 가족·브랜드의 분양 개체와 함께 ‘분양 게시판’ 탭에 보입니다. 끄면 링크를 받은 사람만 내 분양 페이지를 볼 수 있습니다.</small></span><input type="checkbox" id="s-shop-board"${sc.board === true || !sc.on ? ' checked' : ''} aria-label="분양 게시판에 함께 올리기"></label></div>
         <div class="field"><label for="s-shop-intro">소개 글</label><textarea id="s-shop-intro" rows="3" maxlength="500" placeholder="예: 크레스티드 게코 전문 브리더입니다. 분양 문의는 카카오톡으로 주세요.">${esc(sc.intro || '')}</textarea></div>
         <div class="grid2"><div class="field"><label for="s-shop-kakao">카카오톡 오픈채팅 주소</label><input id="s-shop-kakao" value="${esc(sc.kakao || '')}" placeholder="https://open.kakao.com/o/…" autocomplete="off" inputmode="url"></div>
           <div class="field"><label for="s-shop-insta">인스타그램 아이디</label><input id="s-shop-insta" value="${esc(sc.insta || '')}" placeholder="예: @amazing_crace" autocomplete="off"></div></div>
@@ -1627,7 +1702,7 @@ function wireSetup() {
     const kakao = $('#s-shop-kakao').value.trim(), link = $('#s-shop-link').value.trim();
     if (kakao && !safeUrl(kakao)) { err.textContent = '카카오톡 오픈채팅 주소를 다시 확인해 주세요. 예: https://open.kakao.com/o/…'; err.hidden = false; return; }
     if (link && !safeUrl(link)) { err.textContent = '스토어·홈페이지 주소를 다시 확인해 주세요.'; err.hidden = false; return; }
-    fe.shop = {on:shopSw.checked, intro:$('#s-shop-intro').value.trim(), kakao:kakao ? safeUrl(kakao) : '', insta:$('#s-shop-insta').value.trim(), phone:$('#s-shop-phone').value.trim(), link:link ? safeUrl(link) : ''};
+    fe.shop = {on:shopSw.checked, board:$('#s-shop-board').checked, intro:$('#s-shop-intro').value.trim(), kakao:kakao ? safeUrl(kakao) : '', insta:$('#s-shop-insta').value.trim(), phone:$('#s-shop-phone').value.trim(), link:link ? safeUrl(link) : ''};
     fe.species = spList.map(e => { const o = {k:e.k, care:e.care === 'full' ? 'full' : 'basic'}; if (e.p) o.p = e.p; if (!SPK[e.k]) { o.n = e.n; o.c = e.c; } return o; });
     const features = S.farm.features === undefined ? {} : {features:fe};
     const btn = $('#s-save'); btn.disabled = true; btn.textContent = '저장 중…';
@@ -1640,7 +1715,7 @@ function wireSetup() {
         updated_at:new Date().toISOString()
       }).eq('id', S.farm.id));
       if (old && old !== logoPath) sb.storage.from('photos').remove([old]).catch(() => {});
-      S.setupDirty = false; S.shop.delete(S.farm.id); toast('설정을 저장했습니다'); await refresh();
+      S.setupDirty = false; S.shop.delete(S.farm.id); S.board = null; toast('설정을 저장했습니다'); await refresh();
     } catch (e) { err.textContent = errMsg(e); err.hidden = false; btn.disabled = false; btn.textContent = '설정 저장'; }
   });
 }
@@ -2055,7 +2130,7 @@ function openListingForm(id) {
     <div class="field"><span class="lbl">상태</span><div class="seg radio">${Object.entries(LSTATE).map(([k, t]) => `<label><input type="radio" name="ls-st" value="${k}"${st === k ? ' checked' : ''}><span>${t}</span></label>`).join('')}</div></div>
     <div class="field"><label for="ls-price">분양가 (원)</label><input id="ls-price" inputmode="numeric" autocomplete="off" placeholder="비우면 ‘가격 문의’로 표시" value="${l.price ? Number(l.price).toLocaleString('ko-KR') : ''}"></div>
     <div class="field"><label for="ls-note">소개 글</label><textarea id="ls-note" rows="4" maxlength="500" placeholder="예: 먹성 좋고 순해요. 현재 슈퍼푸드 단독 급여 중.">${esc(l.note || '')}</textarea></div>
-    <p class="hint">분양 페이지와 이 개체의 QR 공개 카드에 ‘분양 중’ 정보와 문의 버튼이 함께 보입니다. 사진·모프·성별·혈통 등은 공개 카드 설정을 따릅니다. 분양 처리를 하면 자동으로 내려갑니다.</p>
+    <p class="hint">분양 페이지${shopCfg().board ? '·분양 게시판' : ''}과 이 개체의 QR 공개 카드에 ‘분양 중’ 정보와 문의 버튼이 함께 보입니다. 사진·모프·성별·혈통 등은 공개 카드 설정을 따릅니다. 분양 처리를 하면 자동으로 내려갑니다.</p>
     <p class="err" hidden></p>
     <div class="sh-foot">${g.listing ? '<button type="button" class="btn danger" id="ls-del">분양 내리기</button>' : ''}<span class="sp"></span><button type="button" class="btn" data-act="close-sheet">취소</button><button type="submit" class="btn primary" id="ls-save">${g.listing ? '저장' : '분양 페이지에 올리기'}</button></div></form>`, {label:'분양 등록'});
   sh.querySelector('#lsform').addEventListener('submit', async ev => {
@@ -2064,13 +2139,13 @@ function openListingForm(id) {
     if (price != null && price > 1e10) return showErr(sh, '분양가를 다시 확인해 주세요.');
     const listing = {price, note:sh.querySelector('#ls-note').value.trim(), state:(sh.querySelector('input[name=ls-st]:checked') || {}).value || 'open', since:l.since || today()};
     const btn = sh.querySelector('#ls-save'); busy(btn, true);
-    try { await q(sb.from('geckos').update({listing, updated_at:new Date().toISOString()}).eq('id', id)); closeSheet(); toast(g.listing ? '분양 글을 저장했습니다' : '분양 페이지에 올렸습니다'); S.shop.delete(S.farm.id); await refresh(); }
+    try { await q(sb.from('geckos').update({listing, updated_at:new Date().toISOString()}).eq('id', id)); closeSheet(); toast(g.listing ? '분양 글을 저장했습니다' : '분양 페이지에 올렸습니다'); S.shop.delete(S.farm.id); S.board = null; await refresh(); }
     catch (e) { busy(btn, false); showErr(sh, errMsg(e)); }
   });
   const del = sh.querySelector('#ls-del');
   if (del) del.addEventListener('click', async () => {
     busy(del, true, '내리는 중…');
-    try { await q(sb.from('geckos').update({listing:null, updated_at:new Date().toISOString()}).eq('id', id)); closeSheet(); toast('분양 페이지에서 내렸습니다'); S.shop.delete(S.farm.id); await refresh(); }
+    try { await q(sb.from('geckos').update({listing:null, updated_at:new Date().toISOString()}).eq('id', id)); closeSheet(); toast('분양 페이지에서 내렸습니다'); S.shop.delete(S.farm.id); S.board = null; await refresh(); }
     catch (e) { busy(del, false); showErr(sh, errMsg(e)); }
   });
 }
@@ -2527,6 +2602,9 @@ const ACT = {
   },
   'pub-retry': t => { S.pub.delete(pubKey(t.dataset.id, !!t.dataset.preview)); render(); },
   'shop-retry': t => { S.shop.delete(t.dataset.id); render(); },
+  'board-retry': () => { S.board = null; render(); },
+  'board-view': t => { S.bView = t.dataset.v; render(); },
+  'board-post': () => openBoardPost(),
   'shop-sp': t => { S.shopSp.set(t.dataset.id, t.dataset.v); render(); },
   'listing': t => openListingForm(t.dataset.id),
   'report-done': t => markReport(t.dataset.id, t.dataset.t, true),
@@ -2610,6 +2688,10 @@ document.addEventListener('change', e => {
   const t = e.target, k = t.dataset && t.dataset.chg; if (!k) return;
   if (k === 'sexf') { S.sexFilter = t.value; render(); }
   if (k === 'spf') { S.spFilter = t.value; render(); }
+  if (k === 'b-sp') { S.bSp = t.value; render(); }
+  if (k === 'b-sex') { S.bSex = t.value; render(); }
+  if (k === 'b-sort') { S.bSort = t.value; render(); }
+  if (k === 'b-open') { S.bOpen = t.checked; render(); }
   if (k === 'sort') { S.sort = t.value; lsSet('gk.sort', t.value); render(); }
   if (k === 'lab') { if (t.checked) S.labSel.add(t.dataset.id); else S.labSel.delete(t.dataset.id); render(); }
   if (k === 'mm-center') go('map-' + t.value);
