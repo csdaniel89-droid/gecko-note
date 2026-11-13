@@ -17,6 +17,9 @@ const IS_IOS = /iPhone|iPad|iPod/i.test(UA) || (navigator.platform === 'MacIntel
 const IS_ANDROID = /Android/i.test(UA);
 const IS_SAMSUNG = /SamsungBrowser/i.test(UA);
 const IS_IOS_SAFARI = IS_IOS && !/CriOS|FxiOS|EdgiOS|KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(UA);
+const IS_MOBILE = IS_IOS || IS_ANDROID;
+// 다른 앱 안의 브라우저에서 넘어올 때 주소의 ?go=… 를 원래 화면 주소(#…)로 되돌림
+(() => { try { const u = new URL(location.href), go = u.searchParams.get('go'); if (go) { u.searchParams.delete('go'); history.replaceState(null, '', u.pathname + (u.search || '') + '#' + go); } } catch {} })();
 const runningAsApp = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
 const ATE = { all:'다 먹음', some:'조금 먹음', none:'안 먹음' };
 const LOGT = { weight:'무게', feed:'급여', shed:'탈피', poop:'배변', note:'메모' };
@@ -512,9 +515,11 @@ function vAuth() {
     <h1 class="auth-title">${APP_NAME}</h1>
     ${inAppNote()}
     <p class="auth-text">개체 등록, 무게·급여 기록, 혈통과 브리딩을 휴대폰과 PC에서 함께 관리합니다.</p>
+    ${installCard('auth')}
     <button class="btn primary auth-btn" data-act="login">${GOOGLE_SVG}Google 계정으로 로그인</button>
     ${S.authErr ? `<p class="err">${esc(S.authErr)}</p>` : ''}
     <p class="hint">등록된 계정만 들어올 수 있습니다. 한 번 로그인하면 이 기기에서는 로그인이 유지됩니다.</p>
+    ${!IS_MOBILE && !runningAsApp() ? appQrBox('휴대폰에서도 쓰려면 이 QR을 휴대폰 카메라로 찍어 열고, 나오는 설치 안내를 따라 하세요.') : ''}
   </section>`;
 }
 
@@ -837,8 +842,25 @@ function vJoin(code) {
     <button class="btn primary auth-btn" data-act="accept-invite" data-code="${esc(code)}">초대 수락하고 참여하기</button>
     ${S.needFarm ? '' : '<a class="btn" href="#list">나중에</a>'}${foot}</section>`;
 }
+// 카카오톡 등 다른 앱 안의 브라우저 → 휴대폰 기본 브라우저로 열기
+function externalUrl() {
+  if (IN_KAKAO) return 'kakaotalk://web/openExternal?url=' + encodeURIComponent(location.href);
+  if (IS_ANDROID) { const h = location.hash.slice(1), target = appUrl() + (h ? '?go=' + encodeURIComponent(h) : ''); return 'intent://' + target.replace(/^https?:\/\//, '') + '#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=' + encodeURIComponent(target) + ';end'; }
+  return '';
+}
+function openExternal() { const u = externalUrl(); if (u) location.href = u; }
+// 공개 화면(분양 게시판·분양 페이지·공개 카드)은 카카오톡 안에서도 볼 수 있으니 그대로 두고, 로그인·초대 화면만 바로 넘김 (한 번만)
+function escapeInAppOnce() {
+  if (!IN_KAKAO) return; // 자동으로 넘기는 것은 카카오톡만 (다른 앱은 버튼으로)
+  const r = route();
+  if (['pub', 'shop', 'board', 'gecko'].includes(r.v)) return;
+  try { if (sessionStorage.getItem('gk.esc')) return; sessionStorage.setItem('gk.esc', '1'); } catch { return; }
+  openExternal();
+}
 function inAppNote() {
   if (!IN_APP) return '';
+  if (IN_KAKAO) return `<div class="notice inapp"><p><b>카카오톡 안에서는 구글 로그인과 앱 설치가 되지 않아</b> 휴대폰의 기본 브라우저로 열어 드렸습니다. 열리지 않았다면 아래 버튼을 눌러 주세요.</p><button class="btn small primary" data-act="open-external">기본 브라우저로 열기</button></div>`;
+  if (IS_ANDROID) return `<div class="notice inapp"><p><b>이 앱 안의 브라우저에서는 구글 로그인과 앱 설치가 되지 않습니다.</b> 아래 버튼으로 Chrome에서 열거나, 화면 위·아래 메뉴(⋮ 또는 …)에서 <b>‘다른 브라우저로 열기’</b>를 눌러 주세요.</p><button class="btn small primary" data-act="open-external">Chrome으로 열기</button></div>`;
   return IN_KAKAO
     ? `<div class="notice inapp"><p>카카오톡 안에서는 구글 로그인이 막혀 있습니다. 로그인 버튼을 누르면 휴대폰의 기본 브라우저로 열어 드립니다.</p></div>`
     : `<div class="notice inapp"><p>이 앱 안의 브라우저에서는 구글 로그인이 막혀 있습니다. 화면 위나 아래의 메뉴(⋮ 또는 …)에서 <b>‘다른 브라우저로 열기’</b>를 눌러 Chrome이나 Safari에서 열어 주세요.</p><button class="btn small" data-act="copy-here">주소 복사</button></div>`;
@@ -932,7 +954,7 @@ function vHome() {
   const wdMode = S.settings.feedMode === 'weekdays' && S.settings.feedDays.length;
   const feedDay = wdMode && S.settings.feedDays.includes(wdOf(td)), nx = nextFarmFeedDay();
   const greet = wdMode ? (feedDay ? '급여하는 날이에요' : nx ? `다음 급여일은 ${WD[wdOf(nx)]}요일이에요` : '') : '';
-  let h = `<div class="home"><div class="hello"><span>${m}월 ${d}일 ${WD[wdOf(td)]}요일${greet ? ', ' + greet : ''}</span><h1>${esc(S.farm.name)}</h1></div>`;
+  let h = `<div class="home"><div class="hello"><span>${m}월 ${d}일 ${WD[wdOf(td)]}요일${greet ? ', ' + greet : ''}</span><h1>${esc(S.farm.name)}</h1></div>${installCard('home')}`;
   if (!all.length) {
     return h + `<div class="empty"><h2>첫 개체를 등록해 보세요</h2><p>개체번호, 모프, 성별, 해칭일, 사진, 부모를 입력하면 이곳에 급여할 개체${feat('breeding') ? '와 인큐베이터 소식이' : '가'} 모입니다.</p>
       <div class="actions"><button class="btn primary" data-act="new-gecko">+ 개체 등록</button><button class="btn" data-act="load-samples">예시 3마리 넣어 보기</button></div>
@@ -1624,6 +1646,30 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); instal
 window.addEventListener('appinstalled', () => { installEvt = null; toast('앱으로 설치했습니다. 홈 화면에서 ‘관리노트’를 찾아 열어 주세요'); schedule(); });
 const INSTALL_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M12 7.5v7M9 11.5l3 3 3-3M10.5 18.5h3"/></svg>';
 const SHARE_SVG = '<svg class="ib-ic" viewBox="0 0 24 24" width="18" height="18" aria-label="공유 버튼" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5v10h14V11h-1"/></svg>';
+// 설치 안내 카드: 로그인 화면(auth)과 홈(home) 위쪽. 휴대폰에서만, 앱으로 열었으면 숨김
+let appInstalled = false;
+if (navigator.getInstalledRelatedApps) navigator.getInstalledRelatedApps().then(a => { if (a && a.length) { appInstalled = true; schedule(); } }).catch(() => {});
+window.addEventListener('appinstalled', () => { appInstalled = true; });
+function installCard(where) {
+  if (runningAsApp() || IN_APP || !IS_MOBILE) return '';
+  if (where === 'home' && lsGet('gk.instHide')) return '';
+  if (appInstalled) return `<div class="inst-card done"><div class="ic-ph">${SVG_OK}</div><div class="ic-b"><b>이 휴대폰에 이미 설치되어 있어요</b><p>홈 화면이나 앱 목록의 <b>‘관리노트’</b> 아이콘으로 열면 앱처럼 바로 쓸 수 있습니다.</p>${where === 'home' ? '<div class="actions"><button class="btn small" data-act="install-hide">닫기</button></div>' : ''}</div></div>`;
+  const title = IS_IOS ? (where === 'auth' ? '먼저 홈 화면에 추가하고 시작하세요' : '홈 화면에 추가해 두세요') : '앱으로 설치하면 더 편해요';
+  const text = IS_IOS
+    ? (IS_IOS_SAFARI ? `아이콘을 눌러 앱처럼 바로 열 수 있어요.${where === 'auth' ? ' 아이폰은 설치한 앱에서 따로 로그인하므로, 로그인 전에 추가하면 한 번만 로그인하면 됩니다.' : ' 설치한 앱에서 처음 한 번 더 로그인하면 됩니다.'}` : '아이폰은 <b>Safari</b>에서 열어야 홈 화면에 추가할 수 있어요. 순서를 보여 드릴게요.')
+    : (installEvt ? '버튼 한 번이면 설치돼요. 다음부터는 홈 화면 아이콘을 눌러 앱처럼 바로 열 수 있습니다.' : '홈 화면에 아이콘을 만들어 앱처럼 바로 열 수 있어요.');
+  return `<div class="inst-card pop"><div class="ic-ph">${INSTALL_SVG}</div><div class="ic-b"><b>${title}</b><p>${text}</p>
+    <div class="actions"><button class="btn small primary" data-act="install-app">${IS_IOS ? '추가하는 방법 보기' : '앱으로 설치'}</button>${where === 'home' ? '<button class="btn small" data-act="install-hide">나중에</button>' : ''}</div></div></div>`;
+}
+function qrDataUrl(text, size = 240) {
+  try { const cv = document.createElement('canvas'); cv.width = cv.height = size; drawQR(cv.getContext('2d'), text, 0, 0, size); return cv.toDataURL('image/png'); } catch { return ''; }
+}
+// 다른 기기에서 찍어 바로 여는 앱 주소 QR
+function appQrBox(note) {
+  const q = qrDataUrl(appUrl());
+  return `<div class="inst-qr">${q ? `<img src="${q}" alt="앱 주소 QR 코드" width="132" height="132">` : ''}<div class="iq-b"><b>휴대폰 카메라로 찍기</b><p>${note}</p>
+    <input id="app-link" readonly value="${esc(appUrl())}" aria-label="앱 주소"><div class="actions"><button type="button" class="btn small" data-act="copy-app-link">주소 복사</button>${navigator.share ? '<button type="button" class="btn small" data-act="share-app-link">보내기</button>' : ''}</div></div></div>`;
+}
 function installPanel() {
   const memo = `<p class="tester-memo"><span class="pill tester">테스터용</span>테스트 기간에 테스터분들이 홈 화면에서 바로 열 수 있도록 넣어 둔 기능입니다.</p>`;
   let body;
@@ -1636,7 +1682,8 @@ function installPanel() {
     body = `<div class="inst-row"><button class="btn primary" data-act="install-app">${INSTALL_SVG}앱으로 설치</button>${memo}</div>
       <p class="hint">${how} 설치해도 내용은 지금과 같고, 업데이트는 자동으로 반영됩니다.</p>`;
   }
-  return `<section class="panel install-p" id="install"><div class="ph3"><h3>앱으로 설치</h3></div>${runningAsApp() ? memo : ''}${body}</section>`;
+  return `<section class="panel install-p" id="install"><div class="ph3"><h3>앱으로 설치</h3></div>${runningAsApp() ? memo : ''}${body}
+    ${appQrBox('이 QR을 다른 휴대폰 카메라로 찍으면 바로 이 앱이 열리고, 설치 안내가 나옵니다. 테스터에게 직접 보여 주거나 분양 카드에 인쇄해도 좋아요.')}</section>`;
 }
 function installGuide() {
   const step = (n, t) => `<li><span class="sn">${n}</span><span>${t}</span></li>`;
@@ -1794,7 +1841,7 @@ async function makeInvite() {
 function inviteMessage(code, role) {
   const mine = S.members.find(m => m.user_id === (S.user && S.user.id));
   const from = (mine && (mine.display_name || mine.email)) || '';
-  return `[${S.farm.name} 초대장]\n${from ? `${from}님이 ` : ''}${S.farm.name} 관리노트에 ${ROLE_RO[role]} 초대했습니다.\n아래 링크를 눌러 구글 계정으로 로그인하면 바로 참여할 수 있어요. (7일 동안 한 번 사용 가능)\n${inviteLink(code)}\n\n휴대폰 앱처럼 쓰려면 로그인 후 설정 맨 아래 ‘앱으로 설치’를 눌러 주세요.`;
+  return `[${S.farm.name} 초대장]\n${from ? `${from}님이 ` : ''}${S.farm.name} 관리노트에 ${ROLE_RO[role]} 초대했습니다.\n아래 링크를 눌러 구글 계정으로 로그인하면 바로 참여할 수 있어요. (7일 동안 한 번 사용 가능)\n${inviteLink(code)}\n\n초대를 받은 뒤 홈 화면에 나오는 ‘앱으로 설치’ 안내를 따라 하면 휴대폰에서 앱처럼 바로 열 수 있어요. (아이폰은 Safari에서 열어 주세요)`;
 }
 function openInviteSheet(code, role) {
   const msg = inviteMessage(code, role);
@@ -2707,6 +2754,10 @@ const ACT = {
   },
   'login': () => login(),
   'install-app': () => installApp(),
+  'install-hide': () => { lsSet('gk.instHide', '1'); render(); },
+  'open-external': () => openExternal(),
+  'copy-app-link': () => { const i = $('#app-link'); if (i) copyText(i, '앱 주소를 복사했습니다'); },
+  'share-app-link': async () => { try { await navigator.share({title:APP_NAME, url:appUrl()}); } catch {} },
   'logout': async () => { if (!await confirmSheet('로그아웃할까요?', '이 기기에서만 로그아웃합니다. 데이터는 그대로 남습니다.', '로그아웃')) return; await sb.auth.signOut(); location.hash = 'list'; },
   'retry': () => { S.conn = 'ok'; S.loaded = {g:false, c:false, p:false}; render(); refresh(); },
   'backup': () => backup(),
@@ -2807,7 +2858,7 @@ window.addEventListener('hashchange', () => {
 /* ---------- login & start ---------- */
 async function login() {
   S.authErr = '';
-  if (IN_KAKAO) { location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(location.href); return; }
+  if (IN_APP && externalUrl()) { lsSet('gk.after', location.hash || ''); openExternal(); return; }
   if (IN_APP) { S.authErr = '이 앱 안의 브라우저에서는 구글 로그인이 되지 않습니다. 메뉴에서 ‘다른 브라우저로 열기’를 눌러 주세요.'; render(); return; }
   lsSet('gk.after', location.hash || '');
   try {
@@ -2830,6 +2881,7 @@ function onSession(session) {
   onRoute(); render(); lastLoad = Date.now(); loadAll();
 }
 async function boot() {
+  escapeInAppOnce();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
   render();
   if (!CFG.supabaseUrl || !CFG.supabaseKey || !window.supabase) { S.auth = 'unconfigured'; render(); return; }
